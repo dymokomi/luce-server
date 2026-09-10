@@ -34,3 +34,11 @@ handles, mutable Base options, function-valued handlers and Luce task boundaries
 Its own repository records end-to-end validation against pinned compiler/package
 commits. The Base standard library's protocol codec tests and compiler gates are
 additional layers; they do not replace these independent server tests.
+
+The retained-request regression also passed the
+[hosted matrix at 1fd42e1](https://github.com/dymokomi/luce-server/actions/runs/34537896033).
+With Base's startup argument cleanup, `python3 tests/heap.py build/server-0`
+reports zero leaked blocks/bytes for the HTTP/WebSocket, TCP, and retained-request
+processes under macOS `leaks`. CI now repeats this check alongside the native
+matrix and retains `heap.log`. This checks Base allocations in addition to the
+separate application's ARC diagnostics.

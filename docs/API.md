@@ -159,3 +159,12 @@ to a WebSocket worker's final cleanup.
 connections, completed application/static requests, failures, and outstanding
 requests. These independently sampled counters are not a transactional snapshot
 or a complete HTTP access log.
+
+## Temporary source packaging convention
+
+Until dependency installation introduces independent package identities, staged
+Base sources belong to the consumer's compilation package. The server currently
+uses package error numbers 1–4; consumer-defined `ErrorCode.package` constants
+must use other numbers. Prefer the public error aliases when translating server
+failures. This source-staging convention is explicit in the build tools and will
+be replaced by package-manager integration.

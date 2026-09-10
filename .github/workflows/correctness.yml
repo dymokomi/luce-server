@@ -46,9 +46,17 @@ jobs:
           mkdir -p build
           set -o pipefail
           ./test.sh --base ../luce-base/build/luce-base 2>&1 | tee build/gate.log
+      - name: Check native heap cleanup
+        if: runner.os == 'macOS'
+        working-directory: luce-server
+        run: |
+          set -o pipefail
+          python3 tests/heap.py build/server-0 2>&1 | tee build/heap.log
       - name: Retain validation log
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: luce-server-${{ matrix.host }}-${{ github.sha }}
-          path: luce-server/build/gate.log
+          path: |
+            luce-server/build/gate.log
+            luce-server/build/heap.log
