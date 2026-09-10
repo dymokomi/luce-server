@@ -1,0 +1,155 @@
+## Owned filesystem primitives for Luce. Component validation and HTTP policy
+## live above this module; these operations preserve directory identity and refuse
+## symlinks at every opened component. Byte results borrow each handle's buffer.
+import c
+import files
+import io
+import memory
+import strings
+
+pub let invalid_path: ErrorCode = ErrorCode.package(110)
+pub let not_a_file: ErrorCode = ErrorCode.package(111)
+pub let not_found: ErrorCode = ErrorCode.package(112)
+pub let access_denied: ErrorCode = ErrorCode.package(113)
+
+pub handle Directory:
+    destroy close_directory
+
+pub handle File:
+    destroy close_file
+
+pub handle Upload:
+    destroy close_upload
+
+pub struct Metadata:
+    pub var size: i64
+    pub var modified_seconds: i64
+    pub var modified_nanoseconds: i64
+    pub var identity: str
+
+struct DirectoryData:
+    var directory: files.Directory
+
+struct FileData:
+    var file: files.File
+    var input: u8[16384]
+    var identity: u8[128]
+
+struct UploadData:
+    var file: files.TemporaryFile
+    var input: u8[16384]
+
+func check_path(path: str) -> !:
+    for byte in path.bytes:
+        if byte == 0:
+            error(invalid_path, "a filesystem path cannot contain NUL")
+
+func check_component(path: str) -> !:
+    try check_path(path)
+    if path.length == 0 or path == "." or path == ".." or strings.contains(path, "/") or strings.contains(path, "\\"):
+        error(invalid_path, "expected one relative filesystem component")
+
+pub func open_directory(path: str) -> Directory!:
+    try check_path(path)
+    with memory.heap:
+        let terminated = try strings.copy(path)
+        defer strings.release(terminated)
+        var directory = try files.Directory.open((c.str)terminated, false)
+        errdefer directory.destroy()
+        return (Directory)(void*)(try new DirectoryData(directory = directory))
+
+pub func child_directory(parent: Directory, component: str) -> Directory!:
+    try check_component(component)
+    let data = (DirectoryData*)(void*)parent
+    with memory.heap:
+        let terminated = try strings.copy(component)
+        defer strings.release(terminated)
+        var directory = data.directory.open_directory((c.str)terminated, false) catch failure:
+            if failure.code == files.missing or failure.code == files.not_directory:
+                error(not_found, "directory entry was not found")
+            if failure.code == files.permission_denied or failure.code == files.symlink_loop:
+                error(access_denied, "directory entry is not accessible")
+            error(failure.code, failure.message)
+        errdefer directory.destroy()
+        return (Directory)(void*)(try new DirectoryData(directory = directory))
+
+pub func open_file(parent: Directory, component: str) -> File!:
+    try check_component(component)
+    let data = (DirectoryData*)(void*)parent
+    with memory.heap:
+        let terminated = try strings.copy(component)
+        defer strings.release(terminated)
+        # Opening nonblocking avoids waiting on FIFOs before fstat can reject them.
+        var file = data.directory.open_file((c.str)terminated, follow_symlinks = false, nonblocking = true) catch failure:
+            if failure.code == files.missing or failure.code == files.not_directory:
+                error(not_found, "file entry was not found")
+            if failure.code == files.permission_denied or failure.code == files.symlink_loop:
+                error(access_denied, "file entry is not accessible")
+            error(failure.code, failure.message)
+        errdefer file.destroy()
+        let info = try file.metadata()
+        if info.kind != files.FileKind.regular or info.size < 0:
+            error(not_a_file, "static content must be a regular file")
+        return (File)(void*)(try new FileData(file = file))
+
+pub func metadata(file: File) -> Metadata!:
+    let data = (FileData*)(void*)file
+    let value = try data.file.metadata()
+    let identity = try format(data.identity, f"{value.device}-{value.inode}-{value.size}-{value.modified.seconds}-{value.modified.nanoseconds}-{value.changed.seconds}-{value.changed.nanoseconds}")
+    return Metadata(size = value.size, modified_seconds = value.modified.seconds,
+                    modified_nanoseconds = (i64)value.modified.nanoseconds, identity = identity)
+
+pub func read_file(file: File, maximum: i64) -> const u8[]!:
+    if maximum < 1 or maximum > 16384:
+        error(invalid_path, "file read size must be between one and 16384")
+    let data = (FileData*)(void*)file
+    let count = try data.file.read(data.input[..<(usize)maximum])
+    return data.input[..<count]
+
+pub func seek_file(file: File, offset: i64) -> !:
+    if offset < 0:
+        error(invalid_path, "file offset must be nonnegative")
+    let data = (FileData*)(void*)file
+    discard(try data.file.seek(offset))
+
+pub func create_upload(directory: str) -> Upload!:
+    try check_path(directory)
+    with memory.heap:
+        let terminated = try strings.copy(directory)
+        defer strings.release(terminated)
+        var file = try files.TemporaryFile.create((c.str)terminated)
+        errdefer file.destroy()
+        return (Upload)(void*)(try new UploadData(file = file))
+
+pub func write_upload(upload: Upload, bytes: const u8[]) -> !:
+    let data = (UploadData*)(void*)upload
+    try io.write_all(&data.file, bytes)
+
+pub func rewind_upload(upload: Upload) -> !:
+    let data = (UploadData*)(void*)upload
+    discard(try data.file.seek(0))
+
+pub func read_upload(upload: Upload, maximum: i64) -> const u8[]!:
+    if maximum < 1 or maximum > 16384:
+        error(invalid_path, "upload read size must be between one and 16384")
+    let data = (UploadData*)(void*)upload
+    let count = try data.file.read(data.input[..<(usize)maximum])
+    return data.input[..<count]
+
+pub func close_directory(directory: Directory):
+    with memory.heap:
+        let data = (DirectoryData*)(void*)directory
+        data.directory.destroy()
+        free(data)
+
+pub func close_file(file: File):
+    with memory.heap:
+        let data = (FileData*)(void*)file
+        data.file.destroy()
+        free(data)
+
+pub func close_upload(upload: Upload):
+    with memory.heap:
+        let data = (UploadData*)(void*)upload
+        data.file.destroy()
+        free(data)

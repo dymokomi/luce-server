@@ -1,0 +1,43 @@
+## Process lifecycle primitives. The signal callback only stores a lock-free word;
+## allocation, logging and connection cleanup happen later in the Luce loop.
+import c
+import io
+import platform
+
+extern func install_signal as "signal"(number: i32, handler: func(i32) -> unit) -> i64
+extern func restore_signal as "signal"(number: i32, handler: i64) -> i64
+
+var requested: @u32
+var previous_interrupt: i64 = 0
+var previous_terminate: i64 = 0
+var installed: bool = false
+
+func request_stop(number: i32):
+    discard(number)
+    requested.store(1, .relaxed)
+
+pub func install_handlers() -> !:
+    if installed:
+        error(io.failed, "server signal handlers are already installed")
+    requested.store(0, .relaxed)
+    previous_interrupt = install_signal(2, request_stop)
+    if previous_interrupt == -1:
+        error(io.failed, "SIGINT handler could not be installed")
+    previous_terminate = install_signal(15, request_stop)
+    if previous_terminate == -1:
+        discard(restore_signal(2, previous_interrupt))
+        error(io.failed, "SIGTERM handler could not be installed")
+    installed = true
+
+pub func stopping() -> bool:
+    return requested.load(.relaxed) != 0
+
+pub func restore_handlers():
+    if installed:
+        installed = false
+        discard(restore_signal(2, previous_interrupt))
+        discard(restore_signal(15, previous_terminate))
+
+pub func log_error(text: str) -> !:
+    try io.stderr().write(text)
+    try io.stderr().write("\n")

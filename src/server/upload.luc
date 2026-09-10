@@ -1,0 +1,71 @@
+## Small bodies stay in memory; larger ones spool to an owned temporary file.
+## The request sees a Content only after framing has completed and the file rewinds.
+from server.content import Content
+from server.errors import invalid_configuration, limit_exceeded
+import server.base.filesystem
+
+pub class UploadBody: Content:
+    let maximum: int
+    let temporary_directory: str
+    var memory: bytes = b""
+    var spool: filesystem.Upload? = none
+    var size: int = 0
+    var offset: int = 0
+    var readable: bool = false
+    var closed: bool = false
+
+    pub func init(self, maximum: int, temporary_directory: str):
+        self.maximum = maximum
+        self.temporary_directory = temporary_directory
+
+    pub func append(self, data: bytes) -> unit!:
+        if self.readable or self.closed:
+            error(invalid_configuration, "request body no longer accepts input")
+        if data.length > self.maximum - self.size:
+            error(limit_exceeded, "request body exceeds its configured limit")
+        if self.spool == none and self.size + data.length > 65536:
+            let file = try filesystem.create_upload(self.temporary_directory)
+            try filesystem.write_upload(file, self.memory)
+            self.spool = file
+            self.memory = b""
+        if let file = self.spool:
+            try filesystem.write_upload(file, data)
+        else:
+            self.memory = self.memory + data
+        self.size += data.length
+
+    pub func finish(self) -> unit!:
+        if self.closed:
+            error(invalid_configuration, "request body is closed")
+        if not self.readable:
+            if let file = self.spool:
+                try filesystem.rewind_upload(file)
+            self.readable = true
+
+    pub func length(self) -> int?:
+        return self.size
+
+    pub func read(self, maximum: int) -> bytes!:
+        if not self.readable or self.closed or maximum < 1:
+            error(invalid_configuration, "request body is not readable")
+        let available = self.size - self.offset
+        var count = maximum if maximum < available else available
+        if count > 16384:
+            count = 16384
+        if count == 0:
+            return b""
+        if let file = self.spool:
+            let result = try filesystem.read_upload(file, count)
+            self.offset += result.length
+            return result
+        let result = self.memory[self.offset..<self.offset + count]
+        self.offset += count
+        return result
+
+    pub func close(self):
+        if not self.closed:
+            self.closed = true
+            if let file = self.spool:
+                file.close()
+            self.spool = none
+            self.memory = b""

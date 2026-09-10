@@ -1,0 +1,46 @@
+## Single byte-range selection. Unsupported units, multiple ranges and malformed
+## fields are ignored. Decimal parsing saturates instead of overflowing on large offsets.
+from server.http.syntax import trim_ows
+
+pub enum Selection:
+    full
+    partial(first: int, last: int)
+    unsatisfiable
+
+func number(text: str) -> int?:
+    if text == "":
+        return none
+    var value = 0
+    for byte in text.bytes():
+        if byte < 48 or byte > 57:
+            return none
+        let digit = byte - 48
+        if value > 922337203685477580 or (value == 922337203685477580 and digit > 7):
+            value = 9223372036854775807
+        elif value != 9223372036854775807:
+            value = value * 10 + digit
+    return value
+
+pub func select(field: str, length: int) -> Selection:
+    if length == 0 or not field.starts_with("bytes=") or field.contains(","):
+        return Selection.full
+    let parts = trim_ows(field[6..]).split("-")
+    if parts.length != 2:
+        return Selection.full
+    if parts[0] == "":
+        let suffix = number(parts[1]) else return Selection.full
+        if suffix == 0:
+            return Selection.unsatisfiable
+        let count = suffix if suffix < length else length
+        return Selection.partial(first = length - count, last = length - 1)
+    let first = number(parts[0]) else return Selection.full
+    var last = length - 1
+    if parts[1] != "":
+        let supplied = number(parts[1]) else return Selection.full
+        if supplied < first:
+            return Selection.full
+        if supplied < last:
+            last = supplied
+    if first >= length:
+        return Selection.unsatisfiable
+    return Selection.partial(first = first, last = last)

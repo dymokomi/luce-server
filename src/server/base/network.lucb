@@ -1,0 +1,144 @@
+## Systems boundary only: nonblocking sockets and reusable readiness slots.
+## Luce owns HTTP state. Returned byte views are copied at the Luce boundary;
+## the connection's fixed receive buffer stays owned by its handle.
+import io
+import memory
+import net
+import time
+
+extern func getdtablesize() -> i32
+
+pub let invalid_argument: ErrorCode = ErrorCode.package(100)
+
+pub handle Loop:
+    destroy close_loop
+
+pub handle Connection:
+    destroy close_connection
+
+struct LoopData:
+    var listener: net.Listener
+    var poller: net.Poller
+    var accepting: bool
+
+struct ConnectionData:
+    var socket: net.Connection
+    var input: u8[16384]
+    var ended: bool
+
+pub func listen(host: str, bind_port: i64, capacity: i64) -> Loop!:
+    if bind_port < 0 or bind_port > 65535 or capacity < 1 or capacity > 65535:
+        error(invalid_argument, "invalid listener port or connection capacity")
+    # poll counts disabled slots too. Diagnose this at setup, before exposing a
+    # listener that would immediately fail under a small inherited descriptor limit.
+    if capacity >= (i64)getdtablesize():
+        error(invalid_argument, "connection capacity exceeds the process descriptor limit")
+    let ip = net.IpAddress.parse(host) else error(invalid_argument, "bind address must be a numeric IPv4 or IPv6 address")
+    with memory.heap:
+        var listener = try net.Listener.bind(net.SocketAddress(ip = ip, port = (u16)bind_port))
+        errdefer listener.destroy()
+        try listener.set_nonblocking(true)
+        var poller = try net.Poller.create((usize)capacity + 1)
+        errdefer poller.destroy()
+        let descriptor = listener.descriptor() else error(invalid_argument, "listener has no descriptor")
+        try poller.watch(0, descriptor)
+        let data = try new LoopData(listener = listener, poller = poller, accepting = true)
+        return (Loop)(void*)data
+
+pub func port(loop: Loop) -> i64!:
+    let data = (LoopData*)(void*)loop
+    return (i64)(try data.listener.address()).port
+
+pub func accept(loop: Loop) -> Connection?!:
+    let data = (LoopData*)(void*)loop
+    if not data.accepting:
+        return none
+    var socket = data.listener.accept(true) catch failure:
+        if failure.code == io.would_block:
+            return none
+        error(failure.code, failure.message)
+    errdefer socket.destroy()
+    with memory.heap:
+        let connection = try new ConnectionData(socket = socket, ended = false)
+        return (Connection)(void*)connection
+
+## Slots borrow socket descriptors. Disable a slot before closing its connection;
+## only this loop's caller may mutate registrations or use these connections.
+pub func watch(loop: Loop, slot: i64, connection: Connection, writing: bool) -> !:
+    let data = (LoopData*)(void*)loop
+    let peer = (ConnectionData*)(void*)connection
+    if slot < 1 or (usize)slot >= data.poller.capacity():
+        error(invalid_argument, "connection slot is outside loop capacity")
+    let descriptor = peer.socket.descriptor() else error(invalid_argument, "connection is closed")
+    try data.poller.watch((usize)slot, descriptor, net.WaitInterest.write if writing else net.WaitInterest.read)
+
+pub func disable(loop: Loop, slot: i64) -> !:
+    let data = (LoopData*)(void*)loop
+    if slot < 0:
+        error(invalid_argument, "readiness slot must be nonnegative")
+    try data.poller.disable((usize)slot)
+
+pub func wait_ready(loop: Loop, milliseconds: i64) -> !:
+    let data = (LoopData*)(void*)loop
+    if milliseconds < 0 or milliseconds > 60000:
+        error(invalid_argument, "poll timeout must be between zero and 60000 milliseconds")
+    discard(try data.poller.wait(try net.Deadline.after((u64)milliseconds * 1000000)))
+
+pub func ready(loop: Loop, slot: i64) -> bool!:
+    if slot < 0:
+        error(invalid_argument, "readiness slot must be nonnegative")
+    let data = (LoopData*)(void*)loop
+    let events = try data.poller.readiness((usize)slot)
+    return events.readable or events.writable or events.hangup or events.failure or events.invalid
+
+pub func receive(connection: Connection) -> const u8[]!:
+    let data = (ConnectionData*)(void*)connection
+    let count = data.socket.read(data.input) catch failure:
+        if failure.code == io.would_block:
+            return data.input[..<0]
+        error(failure.code, failure.message)
+    if count == 0:
+        data.ended = true
+    return data.input[..<count]
+
+pub func ended(connection: Connection) -> bool:
+    return ((ConnectionData*)(void*)connection).ended
+
+pub func send(connection: Connection, bytes: const u8[]) -> i64!:
+    let data = (ConnectionData*)(void*)connection
+    let count = data.socket.write(bytes) catch failure:
+        if failure.code == io.would_block:
+            return 0
+        error(failure.code, failure.message)
+    return (i64)count
+
+pub func stop_accepting(loop: Loop) -> !:
+    let data = (LoopData*)(void*)loop
+    if data.accepting:
+        data.accepting = false
+        try data.poller.disable(0)
+        try data.listener.close()
+
+pub func watch_listener(loop: Loop, enabled: bool) -> !:
+    let data = (LoopData*)(void*)loop
+    if enabled and data.accepting:
+        let descriptor = data.listener.descriptor() else error(invalid_argument, "listener is closed")
+        try data.poller.watch(0, descriptor)
+    else:
+        try data.poller.disable(0)
+
+pub func now_milliseconds() -> i64:
+    return (i64)(time.now() // 1000000)
+
+pub func close_connection(connection: Connection):
+    with memory.heap:
+        let data = (ConnectionData*)(void*)connection
+        data.socket.destroy()
+        free(data)
+
+pub func close_loop(loop: Loop):
+    with memory.heap:
+        let data = (LoopData*)(void*)loop
+        data.poller.destroy()
+        data.listener.destroy()
+        free(data)

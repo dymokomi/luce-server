@@ -1,0 +1,18 @@
+## Deterministic common media types; unknown files remain uninterpreted bytes.
+pub func for_path(path: str) -> str:
+    let parts = path.lower().split(".")
+    let extension = parts.last else ""
+    let types: map[str, str] = {
+        "html": "text/html; charset=utf-8", "htm": "text/html; charset=utf-8",
+        "css": "text/css; charset=utf-8", "js": "text/javascript; charset=utf-8",
+        "mjs": "text/javascript; charset=utf-8", "json": "application/json",
+        "txt": "text/plain; charset=utf-8", "md": "text/plain; charset=utf-8",
+        "luc": "text/plain; charset=utf-8", "lucb": "text/plain; charset=utf-8",
+        "svg": "image/svg+xml", "png": "image/png", "jpg": "image/jpeg",
+        "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp",
+        "ico": "image/vnd.microsoft.icon", "pdf": "application/pdf",
+        "wasm": "application/wasm", "zip": "application/zip", "gz": "application/gzip",
+        "mp4": "video/mp4", "webm": "video/webm", "mp3": "audio/mpeg",
+        "ogg": "audio/ogg", "woff": "font/woff", "woff2": "font/woff2"
+    }
+    return types[extension] else "application/octet-stream"

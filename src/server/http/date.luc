@@ -1,0 +1,87 @@
+## Locale-independent IMF-fixdate output and all three HTTP date input forms.
+## Invalid condition dates are ignored by returning none, never guessed locally.
+import server.base.clock
+
+let months = "JanFebMarAprMayJunJulAugSepOctNovDec"
+let weekdays = "SunMonTueWedThuFriSat"
+
+func padded(value: int, width: int) -> str:
+    let text = str(value)
+    return "0".repeat(width - text.length) + text if text.length < width else text
+
+pub func format(seconds: int) -> str?:
+    let value = clock.parts(seconds) else return none
+    if value.year < 0 or value.year > 9999:
+        return none
+    let day = value.weekday * 3
+    let month = (value.month - 1) * 3
+    return weekdays[day..<day + 3] + ", " + padded(value.day, 2) + " " + months[month..<month + 3] + " " + padded(value.year, 4) + " " + padded(value.hour, 2) + ":" + padded(value.minute, 2) + ":" + padded(value.second, 2) + " GMT"
+
+pub func now() -> str:
+    return format(clock.unix()) else ""
+
+func number(text: str) -> int?:
+    if text == "":
+        return none
+    for byte in text.bytes():
+        if byte < 48 or byte > 57:
+            return none
+    return int(text) catch failure:
+        recover none
+
+func month_number(text: str) -> int?:
+    for month in 0..<12:
+        if months[month * 3..<month * 3 + 3] == text:
+            return month + 1
+    return none
+
+pub func parse(text: str) -> int?:
+    var year = ""
+    var month = ""
+    var day = ""
+    var time = ""
+    var short_year = false
+    let parts = text.split(" ")
+    if parts.length == 6 and parts[0].ends_with(",") and parts[5] == "GMT":
+        day = parts[1]
+        month = parts[2]
+        year = parts[3]
+        time = parts[4]
+        if day.length != 2 or year.length != 4:
+            return none
+    elif parts.length == 4 and parts[0].ends_with(",") and parts[3] == "GMT":
+        let fields = parts[1].split("-")
+        if fields.length != 3 or fields[0].length != 2 or fields[2].length != 2:
+            return none
+        day = fields[0]
+        month = fields[1]
+        year = fields[2]
+        time = parts[2]
+        short_year = true
+    else:
+        var fields: list[str] = []
+        for field in parts:
+            if field != "":
+                fields.append(field)
+        if fields.length != 5 or fields[0].length != 3 or fields[4].length != 4:
+            return none
+        month = fields[1]
+        day = fields[2]
+        time = fields[3]
+        year = fields[4]
+    let parsed_year = number(year) else return none
+    let parsed_month = month_number(month) else return none
+    let parsed_day = number(day) else return none
+    let clock_fields = time.split(":")
+    if clock_fields.length != 3 or clock_fields[0].length != 2 or clock_fields[1].length != 2 or clock_fields[2].length != 2:
+        return none
+    let hour = number(clock_fields[0]) else return none
+    let minute = number(clock_fields[1]) else return none
+    let second = number(clock_fields[2]) else return none
+    var full_year = parsed_year
+    if short_year:
+        let current = clock.parts(clock.unix()) else return none
+        full_year = (current.year // 100) * 100 + parsed_year
+        if full_year > current.year + 50:
+            full_year -= 100
+    return clock.seconds(full_year, parsed_month, parsed_day, hour, minute, second)

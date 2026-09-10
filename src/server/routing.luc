@@ -119,6 +119,12 @@ pub class Router:
             result.append(RouteInfo(method = route.method, path = route.path, summary = route.summary))
         return result
 
+    pub func has_path(self, path: str) -> bool:
+        for route in self.registered:
+            if route.match_path(path) != none:
+                return true
+        return false
+
     pub func dispatch(self, request: Request) -> Response!:
         var best = ""
         for route in self.registered:
