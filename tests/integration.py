@@ -25,6 +25,33 @@ def eventually(predicate, timeout=2):
     assert predicate(), "asynchronous cleanup did not finish"
 
 
+def finish_process(process, timeout):
+    """Collect output until the owned process exits, without waiting on inherited pipes.
+
+    macOS diagnostic helpers can inherit a pipe and outlive leaks itself. The
+    exit status and all bytes already written still belong to this test process.
+    """
+    streams = (process.stdout, process.stderr)
+    chunks = ([], [])
+    for stream in streams:
+        os.set_blocking(stream.fileno(), False)
+    deadline = time.monotonic() + timeout
+    while True:
+        for stream, output in zip(streams, chunks):
+            data = stream.read1(65536)
+            if data:
+                output.append(data)
+        if process.poll() is not None:
+            for stream, output in zip(streams, chunks):
+                while data := stream.read1(65536):
+                    output.append(data)
+            return tuple(b''.join(output) for output in chunks)
+        if time.monotonic() >= deadline:
+            raise subprocess.TimeoutExpired(process.args, timeout,
+                output=b''.join(chunks[0]), stderr=b''.join(chunks[1]))
+        time.sleep(.01)
+
+
 def response(stream, head=False):
     line = stream.readline()
     assert line.startswith(b"HTTP/1."), line

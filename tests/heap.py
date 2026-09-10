@@ -10,7 +10,7 @@ import integration
 
 
 def finish_with_heap_report(self):
-    output, errors = self.process.communicate(timeout=30)
+    output, errors = integration.finish_process(self.process, timeout=30)
     assert self.process.returncode == 0 and not errors, (self.process.returncode, output, errors)
     assert output.startswith(b'STOPPED\n'), output
     assert b'0 leaks for 0 total leaked bytes' in output, output
