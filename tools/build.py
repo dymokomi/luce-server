@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build a Base consumer against this source package without a package manager.
 
-Each output gets an isolated source tree. The compiler sees the same
+Each invocation gets a temporary source tree. The compiler sees the same
 luce_server namespace that a future installer will place in a consumer package.
 """
 import argparse
@@ -9,24 +9,23 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def build(entry: Path, output: Path, compiler: Path, opt: int = 0) -> None:
     entry, output, compiler = entry.resolve(), output.resolve(), compiler.resolve()
-    project = output.parent / (output.name + ".sources")
-    project.mkdir(parents=True, exist_ok=True)
-    source = project / "src"
-    source.mkdir(exist_ok=True)
-    destination = source / "luce_server"
-    if destination.exists():
-        shutil.rmtree(destination)
-    shutil.copytree(ROOT / "src/luce_server", destination, ignore=shutil.ignore_patterns(".DS_Store"))
-    shutil.copy2(entry, source / "main.lucb")
-    (project / "luce.toml").write_text('[package]\nname = "luce_server"\nsource = "src"\n')
-    subprocess.run([str(compiler), "build", str(source / "main.lucb"), "--native",
-                    "--opt", str(opt), "-o", str(output)], check=True, cwd=ROOT)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="luce-server-") as temporary:
+        project = Path(temporary)
+        source = project / "src"
+        shutil.copytree(ROOT / "src/luce_server", source / "luce_server",
+                        ignore=shutil.ignore_patterns(".DS_Store"))
+        shutil.copy2(entry, source / "main.lucb")
+        (project / "luce.toml").write_text('[package]\nname = "luce_server"\nsource = "src"\n')
+        subprocess.run([str(compiler), "build", str(source / "main.lucb"), "--native",
+                        "--opt", str(opt), "-o", str(output)], check=True, cwd=ROOT)
 
 
 if __name__ == "__main__":

@@ -22,6 +22,8 @@ Until the package manager exists, `tools/build.py` stages the package sources
 under a consumer's source root. No server executable or compiler implementation
 is embedded in the library. Dependencies and validation use full commit pins in
 `bootstrap/BASE`; the companion application pins both compilers and this package.
+The staged source tree is temporary and removed after compilation, including
+failures; only the requested binary is kept in the output directory.
 
 A server lifecycle is:
 
