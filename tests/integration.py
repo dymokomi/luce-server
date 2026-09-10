@@ -236,6 +236,15 @@ def http_tests(binary, directory):
 
         peer, stream = server.websocket()
         with peer, stream:
+            peer.sendall(frame(1, b"close"))
+            assert read_frame(stream) == (1, b"close")
+            assert read_frame(stream) == (8, struct.pack("!H", 1000))
+            # The server must give the peer time to acknowledge its close.
+            assert not select.select([peer], [], [], 0.05)[0]
+            peer.sendall(frame(8, struct.pack("!H", 1000)))
+            assert stream.read() == b""
+        peer, stream = server.websocket()
+        with peer, stream:
             # Continuations make progress inside the idle timeout, but the
             # complete message still has one absolute request deadline.
             peer.sendall(frame(1, b"start", final=False))

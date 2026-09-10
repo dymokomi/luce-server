@@ -196,7 +196,10 @@ pub func parameter(request: Request, name: str) -> str?:
 ## This borrowed view expires on the next query call or request destruction.
 pub func query(request: Request, name: str) -> str?!:
     let pending = (model.Pending*)(void*)request
-    return try url.query(pending.head.target, name, &pending.scratch)
+    return url.query(pending.head.target, name, &pending.scratch) catch failure:
+        if failure.code == utf8.invalid_sequence or failure.code == utf8.incomplete_sequence:
+            error(storage.invalid, "query text is not valid UTF-8")
+        error(failure.code, failure.message)
 
 pub func body_size(request: Request) -> i64:
     return (i64)((model.Pending*)(void*)request).payload.length

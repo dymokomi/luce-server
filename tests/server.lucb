@@ -68,7 +68,10 @@ func dispatch(request: http.Request, application: Application*) -> !:
             else:
                 try websocket.accept(request, "")
         else:
-            try websocket.send(request, try http.body_bytes(request, 1048576))
+            let data = try http.body_bytes(request, 1048576)
+            if (str)data == "close":
+                try http.close_after_reply(request)
+            try websocket.send(request, data)
     else:
         try http.text(request, 500, "unregistered handler")
 
