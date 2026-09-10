@@ -1,9 +1,0 @@
-## Stable categories shared by protocol, routing and request validation. Messages
-## add context; callers classify failures by code rather than matching prose.
-pub let bad_request: ErrorCode = ErrorCode.package(1)
-pub let limit_exceeded: ErrorCode = ErrorCode.package(2)
-pub let unsupported_protocol: ErrorCode = ErrorCode.package(3)
-pub let invalid_configuration: ErrorCode = ErrorCode.package(4)
-pub let validation_failed: ErrorCode = ErrorCode.package(5)
-pub let invalid_json: ErrorCode = ErrorCode.package(6)
-pub let invalid_response: ErrorCode = ErrorCode.package(7)

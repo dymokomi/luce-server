@@ -1,7 +1,0 @@
-## The transport loop depends on this application boundary, not on route or
-## middleware implementations. A future TLS transport keeps the same handler API.
-from server.request import Request
-from server.response import Response
-
-pub interface Handler:
-    func handle(self, request: Request) -> Response!
