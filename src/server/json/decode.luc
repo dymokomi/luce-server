@@ -1,0 +1,172 @@
+## Recursive descent over byte offsets, with explicit byte, depth and node limits.
+## UTF-8 validity belongs to the input str; escape decoding validates surrogate pairs.
+from server.errors import invalid_json, limit_exceeded
+from server.json.value import Value
+import server.json.number
+from server.encoding import hex_digit, scalar
+
+class Parser:
+    let data: bytes
+    let depth_limit: int
+    let node_limit: int
+    var at: int = 0
+    var nodes: int = 0
+
+    func init(self, text: str, depth_limit: int, node_limit: int):
+        self.data = text.bytes()
+        self.depth_limit = depth_limit
+        self.node_limit = node_limit
+
+    func peek(self) -> int:
+        return self.data[self.at] if self.at < self.data.length else -1
+
+    func whitespace(self):
+        while self.peek() == 32 or self.peek() == 9 or self.peek() == 10 or self.peek() == 13:
+            self.at += 1
+
+    func expect(self, byte: int) -> unit!:
+        if self.peek() != byte:
+            error(invalid_json, f"unexpected JSON byte at offset {self.at}")
+        self.at += 1
+
+    func word(self, expected: bytes) -> unit!:
+        for byte in expected:
+            try self.expect(byte)
+
+    func hexadecimal(self) -> int!:
+        var value = 0
+        for index in 0..<4:
+            let digit = hex_digit(self.peek()) else error(invalid_json, "invalid JSON Unicode escape")
+            value = value * 16 + digit
+            self.at += 1
+        return value
+
+    func string(self) -> str!:
+        try self.expect(34)
+        var pieces: list[str] = []
+        var start = self.at
+        while true:
+            let byte = self.peek()
+            if byte < 32:
+                error(invalid_json, "unterminated JSON string or unescaped control byte")
+            if byte == 34 or byte == 92:
+                pieces.append(try self.data[start..<self.at].text())
+                self.at += 1
+                if byte == 34:
+                    return pieces.join("")
+                let escaped = self.peek()
+                self.at += 1
+                if escaped == 34:
+                    pieces.append("\"")
+                elif escaped == 92:
+                    pieces.append("\\")
+                elif escaped == 47:
+                    pieces.append("/")
+                elif escaped == 98:
+                    pieces.append(try scalar(8))
+                elif escaped == 102:
+                    pieces.append(try scalar(12))
+                elif escaped == 110:
+                    pieces.append("\n")
+                elif escaped == 114:
+                    pieces.append("\r")
+                elif escaped == 116:
+                    pieces.append("\t")
+                elif escaped == 117:
+                    var point = try self.hexadecimal()
+                    if point >= 55296 and point <= 56319:
+                        try self.expect(92)
+                        try self.expect(117)
+                        let low = try self.hexadecimal()
+                        if low < 56320 or low > 57343:
+                            error(invalid_json, "invalid low surrogate in JSON escape")
+                        point = 65536 + (point - 55296) * 1024 + low - 56320
+                    elif point >= 56320 and point <= 57343:
+                        error(invalid_json, "unpaired low surrogate in JSON escape")
+                    pieces.append(try scalar(point))
+                else:
+                    error(invalid_json, "invalid JSON string escape")
+                start = self.at
+            else:
+                self.at += 1
+        error(invalid_json, "unterminated JSON string")
+
+    func numeric(self) -> Value!:
+        let start = self.at
+        while number.digit(self.peek()) or self.peek() == 45 or self.peek() == 43 or self.peek() == 46 or self.peek() == 101 or self.peek() == 69:
+            self.at += 1
+        let text = try self.data[start..<self.at].text()
+        if not number.valid(text):
+            error(invalid_json, "invalid JSON number")
+        if not text.contains(".") and not text.contains("e") and not text.contains("E") and text != "-0":
+            let value = int(text) catch failure:
+                return Value.decimal(text = text)
+            return Value.integer(value = value)
+        return Value.decimal(text = text)
+
+    func value(self, depth: int) -> Value!:
+        if depth > self.depth_limit or self.nodes >= self.node_limit:
+            error(limit_exceeded, "JSON depth or node limit exceeded")
+        self.nodes += 1
+        self.whitespace()
+        let byte = self.peek()
+        if byte == 34:
+            return Value.text(value = try self.string())
+        if byte == 110:
+            try self.word(b"null")
+            return Value.null
+        if byte == 116:
+            try self.word(b"true")
+            return Value.boolean(value = true)
+        if byte == 102:
+            try self.word(b"false")
+            return Value.boolean(value = false)
+        if byte == 45 or number.digit(byte):
+            return try self.numeric()
+        if byte == 91:
+            self.at += 1
+            self.whitespace()
+            var items: list[Value] = []
+            if self.peek() == 93:
+                self.at += 1
+                return Value.array(items = items)
+            while true:
+                items.append(try self.value(depth + 1))
+                self.whitespace()
+                if self.peek() == 93:
+                    self.at += 1
+                    return Value.array(items = items)
+                try self.expect(44)
+        if byte == 123:
+            self.at += 1
+            self.whitespace()
+            var fields: map[str, Value] = {}
+            if self.peek() == 125:
+                self.at += 1
+                return Value.object(fields = fields)
+            while true:
+                self.whitespace()
+                let key = try self.string()
+                if key in fields:
+                    error(invalid_json, "duplicate JSON object key")
+                self.whitespace()
+                try self.expect(58)
+                fields[key] = try self.value(depth + 1)
+                self.whitespace()
+                if self.peek() == 125:
+                    self.at += 1
+                    return Value.object(fields = fields)
+                try self.expect(44)
+        error(invalid_json, f"unexpected JSON value at offset {self.at}")
+
+    func document(self) -> Value!:
+        let value = try self.value(0)
+        self.whitespace()
+        if self.at != self.data.length:
+            error(invalid_json, "trailing data after JSON value")
+        return value
+
+pub func parse(text: str, max_bytes: int = 1048576, max_depth: int = 64, max_nodes: int = 100000) -> Value!:
+    if text.byte_count > max_bytes or max_bytes < 0 or max_depth < 0 or max_nodes < 1:
+        error(limit_exceeded, "JSON input limit exceeded or invalid")
+    return try Parser(text, max_depth, max_nodes).document()

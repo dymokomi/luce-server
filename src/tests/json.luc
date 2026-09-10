@@ -1,0 +1,41 @@
+import server.json.decode
+import server.json.encode
+from server.json.value import Value
+
+func rejected(text: str) -> bool:
+    discard(decode.parse(text) catch failure:
+        return true)
+    return false
+
+pub func run() -> unit!:
+    let document = try decode.parse("{\"a\": [null, true, -2, 1.25e+10, 9223372036854775808], \"b\": \"\\uD83D\\uDE00\\n\"}")
+    assert(try decode.parse(try encode.compact(document)) == document)
+    assert(try decode.parse("-0") == Value.decimal(text = "-0"))
+    assert(try decode.parse("9223372036854775807") == Value.integer(value = 9223372036854775807))
+    assert(try decode.parse("9223372036854775808") == Value.decimal(text = "9223372036854775808"))
+    assert(try decode.parse("1e99999999") == Value.decimal(text = "1e99999999"))
+    assert(try decode.parse("\"\\uD83D\\uDE00\"") == Value.text(value = "😀"))
+    assert(try decode.parse("\"\\u0041\\u00df\\u6771\"") == Value.text(value = "Aß東"))
+    assert(try decode.parse(" \t\r\ntrue \t\r\n") == Value.boolean(value = true))
+    assert(try encode.compact(Value.text(value = "a\nb\t\"\\")) == "\"a\\u000ab\\u0009\\\"\\\\\"")
+    for invalid in ["", " ", "[", "{", "[1,]", "{\"a\": 1,}", "{\"a\": 1, \"a\": 2}",
+                    "01", "-01", "+1", "1.", ".1", "1e", "1e+", "--1", "NaN", "Infinity",
+                    "true false", "[1 2]", "\"line\nbreak\"", "\"\\x\"", "\"\\uD800\"",
+                    "\"\\uDC00\"", "\"\\uD800\\u0041\"", "\"\\u12xz\""]:
+        assert(rejected(invalid))
+    assert(rejected("[".repeat(65) + "0" + "]".repeat(65)))
+    assert(try decode.parse("[".repeat(64) + "0" + "]".repeat(64)) != Value.null)
+    let complete = "{\"message\": \"escaped \\uD83D\\uDE00\", \"n\": -1.25e-2}"
+    for split in 0..<complete.length:
+        assert(rejected(complete[..<split]))
+    var limited = false
+    discard(encode.compact(Value.text(value = "hello"), max_bytes = 6) catch failure:
+        limited = true
+        recover "")
+    assert(limited)
+    var bad_decimal = false
+    discard(encode.compact(Value.decimal(text = "nan")) catch failure:
+        bad_decimal = true
+        recover "")
+    assert(bad_decimal)
+    print("ok JSON: exact numbers, escapes, surrogate pairs, malformed input and limits")

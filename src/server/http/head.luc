@@ -2,7 +2,7 @@
 ## before a handler can observe the request or any body bytes are interpreted.
 from server.errors import bad_request, limit_exceeded, unsupported_protocol
 from server.headers import Headers
-from server.http.encoding import latin1
+from server.encoding import latin1
 from server.http.syntax import token, decimal, trim_ows, comma_tokens
 
 pub struct Limits:

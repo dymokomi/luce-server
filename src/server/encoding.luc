@@ -36,6 +36,22 @@ pub func hex_digit(value: int) -> int?:
         return value - 87
     return none
 
+## Encode one validated Unicode scalar. JSON's surrogate-pair decoder calls this
+## only after combining the pair; surrogate code points alone are not scalars.
+pub func scalar(value: int) -> str!:
+    if value < 0 or value > 1114111 or (value >= 55296 and value <= 57343):
+        error(bad_request, "invalid Unicode scalar")
+    var encoded = b""
+    if value < 128:
+        encoded = byte(value)
+    elif value < 2048:
+        encoded = byte(192 + value // 64) + byte(128 + value % 64)
+    elif value < 65536:
+        encoded = byte(224 + value // 4096) + byte(128 + (value // 64) % 64) + byte(128 + value % 64)
+    else:
+        encoded = byte(240 + value // 262144) + byte(128 + (value // 4096) % 64) + byte(128 + (value // 64) % 64) + byte(128 + value % 64)
+    return try encoded.text()
+
 ## Decode escapes once. A plus means space only in form/query components.
 pub func percent_decode(text: str, plus_as_space: bool = false) -> str!:
     let data = text.bytes()

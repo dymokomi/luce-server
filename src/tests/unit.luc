@@ -1,56 +1,7 @@
-import server.http.head
-import server.http.encoding
-from server.http.syntax import token, decimal, trim_ows, comma_tokens, header_end
-
-func rejected(data: bytes) -> bool:
-    discard(head.parse(data) catch failure:
-        return true)
-    return false
+import tests.http as http_tests
+import tests.json as json_tests
 
 pub func main(arguments: list[str]) -> int!:
-    assert(token("Content-Type"))
-    assert(not token("Content Type"))
-    assert(not token(""))
-    assert(try decimal("000123", 123) == 123)
-    assert(trim_ows(" \tvalue\t ") == "value")
-    assert(try comma_tokens("keep-alive, , CLOSE") == ["keep-alive", "close"])
-    assert(header_end(b"GET / HTTP/1.1\r\n\r\nbody") == 18)
-    let request = try head.parse(b"POST /items HTTP/1.1\r\nHost: localhost\r\nContent-Length: 03, 3\r\nX-Test: \xff\r\n\r\n")
-    assert(request.method == "POST" and request.keep_alive)
-    assert(request.headers.get("x-test") == "ÿ")
-    assert(request.framing == head.Framing.fixed(length = 3))
-    assert(try encoding.percent_decode("caf%C3%A9+tea", true) == "café tea")
-    for invalid in [
-        b"GET / HTTP/1.1\r\n\r\n",
-        b"GET / HTTP/1.1\r\nHost: a\r\nHost: a\r\n\r\n",
-        b"GET / HTTP/1.1\r\nHost:\r\n\r\n",
-        b"GET / HTTP/1.1\r\nHost: a b\r\n\r\n",
-        b"GET / HTTP/1.1\r\nHost: a\r\nX : b\r\n\r\n",
-        b"GET / HTTP/1.1\r\nHost: a\r\n folded: b\r\n\r\n",
-        b"GET / HTTP/1.1\r\nHost: a\r\nX: a\nInjected: b\r\n\r\n",
-        b"GET / HTTP/1.1\r\nHost: a\r\nX: a\x00b\r\n\r\n",
-        b"GET / HTTP/1.1\r\nHost: a\r\nX: a\x7fb\r\n\r\n",
-        b"GET  / HTTP/1.1\r\nHost: a\r\n\r\n",
-        b"GET / HTTP/2.0\r\nHost: a\r\n\r\n",
-        b"POST / HTTP/1.1\r\nHost: a\r\nContent-Length: +1\r\n\r\n",
-        b"POST / HTTP/1.1\r\nHost: a\r\nContent-Length: -1\r\n\r\n",
-        b"POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 9223372036854775808\r\n\r\n",
-        b"POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 1, 2\r\n\r\n",
-        b"POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n",
-        b"POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n",
-        b"POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip, chunked\r\n\r\n",
-        b"POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked, chunked\r\n\r\n",
-        b"POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding:\r\n\r\n",
-        b"POST / HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n"
-    ]:
-        assert(rejected(invalid))
-    let complete = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"
-    for split in 0..<complete.length:
-        assert(rejected(complete[..<split]))
-        assert(header_end(complete[..<split]) == none)
-        assert(header_end(complete, split - 3) == complete.length)
-    assert(not (try head.parse(b"GET / HTTP/1.0\r\n\r\n")).keep_alive)
-    assert(not (try head.parse(b"GET / HTTP/1.1\r\nHost: a\r\nConnection: keep-alive, close\r\n\r\n")).keep_alive)
-    assert((try head.parse(b"POST / HTTP/1.1\r\nHost: [::1]:80\r\nTransfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n")).expect_continue)
-    print("ok HTTP syntax and request head")
+    try http_tests.run()
+    try json_tests.run()
     return 0
