@@ -1,0 +1,116 @@
+## One response owns its wire framing. Each next() result must be fully written
+## before requesting another, allowing transports to retain precise short-write offsets.
+from server.response import Response
+from server.errors import invalid_response
+
+pub func reason(status: int) -> str:
+    let names: map[int, str] = {200: "OK", 201: "Created", 202: "Accepted", 204: "No Content",
+        205: "Reset Content", 206: "Partial Content", 301: "Moved Permanently", 302: "Found",
+        303: "See Other", 304: "Not Modified", 307: "Temporary Redirect", 308: "Permanent Redirect",
+        400: "Bad Request", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed",
+        408: "Request Timeout", 409: "Conflict", 411: "Length Required", 412: "Precondition Failed",
+        413: "Content Too Large", 414: "URI Too Long", 415: "Unsupported Media Type",
+        416: "Range Not Satisfiable", 417: "Expectation Failed", 422: "Unprocessable Content",
+        431: "Request Header Fields Too Large", 500: "Internal Server Error", 501: "Not Implemented",
+        503: "Service Unavailable", 505: "HTTP Version Not Supported"}
+    return names[status] else "Response"
+
+pub func hexadecimal(value: int) -> str:
+    assert(value >= 0)
+    if value == 0:
+        return "0"
+    let digits = "0123456789abcdef"
+    var number = value
+    var output = ""
+    while number > 0:
+        let digit = number % 16
+        output = digits[digit..<digit + 1] + output
+        number = number // 16
+    return output
+
+pub class Encoder:
+    let response: Response
+    let chunked: bool
+    let suppressed: bool
+    let header_block: bytes
+    pub let close_after: bool
+    var remaining: int?
+    var started: bool = false
+    var complete: bool = false
+
+    pub func init(self, response: Response, method: str, version: str, keep_alive: bool, date: str = "") -> unit!:
+        let length = response.content.length()
+        if let size = length:
+            if size < 0:
+                error(invalid_response, "negative response content length")
+        let suppressed = method == "HEAD" or response.status == 204 or response.status == 205 or response.status == 304
+        let chunked = not suppressed and length == none and version == "HTTP/1.1"
+        let close_after = not keep_alive or (not suppressed and length == none and not chunked)
+        var lines: list[str] = [version + " " + str(response.status) + " " + reason(response.status)]
+        for header in response.headers.entries():
+            if header.name == "content-length" or header.name == "transfer-encoding" or header.name == "connection" or header.name == "trailer":
+                error(invalid_response, "response framing headers are managed by the server")
+            lines.append(header.name + ": " + header.value)
+        if date != "" and not response.headers.contains("date"):
+            lines.append("date: " + date)
+        if response.status == 205:
+            lines.append("content-length: 0")
+        elif response.status != 204 and response.status != 304:
+            if let size = length:
+                lines.append("content-length: " + str(size))
+            elif chunked:
+                lines.append("transfer-encoding: chunked")
+        if close_after:
+            lines.append("connection: close")
+        elif version == "HTTP/1.0":
+            lines.append("connection: keep-alive")
+        let text = lines.join("\r\n") + "\r\n\r\n"
+        if text.byte_count > 65536:
+            error(invalid_response, "response headers exceed the server limit")
+        self.response = response
+        self.chunked = chunked
+        self.suppressed = suppressed
+        self.header_block = text.bytes()
+        self.close_after = close_after
+        self.remaining = length
+
+    pub func next(self) -> bytes!:
+        if self.complete:
+            return b""
+        if not self.started:
+            self.started = true
+            return self.header_block
+        if self.suppressed or self.remaining == 0:
+            self.close()
+            return b""
+        var maximum = 16384
+        if let left = self.remaining:
+            if left < maximum:
+                maximum = left
+        let chunk = self.response.content.read(maximum) catch failure:
+            self.close()
+            error(failure.code, failure.message)
+        if chunk.length > maximum:
+            self.close()
+            error(invalid_response, "content producer exceeded the requested chunk size")
+        if chunk.length == 0:
+            if let left = self.remaining:
+                if left > 0:
+                    self.close()
+                    error(invalid_response, "response content ended before its declared length")
+            self.close()
+            return b"0\r\n\r\n" if self.chunked else b""
+        if let left = self.remaining:
+            self.remaining = left - chunk.length
+        if self.chunked:
+            return hexadecimal(chunk.length).bytes() + b"\r\n" + chunk + b"\r\n"
+        return chunk
+
+    pub func close(self):
+        if not self.complete:
+            self.complete = true
+            self.response.content.close()
+
+    pub func deinit(self):
+        if not self.complete:
+            self.response.content.close()
