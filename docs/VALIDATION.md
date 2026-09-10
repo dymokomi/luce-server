@@ -1,8 +1,9 @@
 # Validation
 
 The Base server passes native optimization levels 0–3 on ARM64 macOS and x86-64
-Linux. The implementation at `1833cf1` passed the
-[complete hosted server matrix](https://github.com/dymokomi/luce-server/actions/runs/34537471074).
+Linux. The [validation run at `902d7ba`](https://github.com/dymokomi/luce-server/actions/runs/34540922009)
+records successful native matrix steps on both hosts and a successful macOS heap
+check using the compiler revision pinned in `bootstrap/BASE`.
 The package is `0.1.0-dev`; this is development evidence, not a production release
 or a claim that all server workloads are covered.
 
@@ -21,10 +22,10 @@ The independent Python clients exercise the actual native executable:
   whole-message deadlines, Origin rejection, and both directions of close.
 - Raw TCP byte equality across arbitrary read chunk boundaries.
 
-The final lifetime regression additionally keeps a spooled request alive after
+The lifetime regression additionally keeps a spooled request alive after
 closing its server and worker, verifies the body remains readable, rejects the
 revoked token and late reply, then verifies temporary cleanup. It passes locally
-at all four native optimization levels; the current hosted workflow runs it too.
+and in the hosted matrix at all four native optimization levels.
 
 `tests/unit.lucb` covers URL validation, deterministic route selection, ranges,
 and locale-independent HTTP dates. `tests/server.lucb` exercises the public Base
@@ -39,6 +40,6 @@ The retained-request regression also passed the
 [hosted matrix at 1fd42e1](https://github.com/dymokomi/luce-server/actions/runs/34537896033).
 With Base's startup argument cleanup, `python3 tests/heap.py build/server-0`
 reports zero leaked blocks/bytes for the HTTP/WebSocket, TCP, and retained-request
-processes under macOS `leaks`. CI now repeats this check alongside the native
-matrix and retains `heap.log`. This checks Base allocations in addition to the
+processes under macOS `leaks`. The hosted run above passed this check alongside
+the native matrix and retains `heap.log`. This checks Base allocations in addition to the
 separate application's ARC diagnostics.
