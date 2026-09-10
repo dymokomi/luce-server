@@ -1,0 +1,92 @@
+## Registration is single-threaded before start. The frozen table is read by all
+## network threads; application route identifiers contain no callback pointers.
+import files
+import net
+import luce_server.internal.storage
+import luce_server.internal.url
+
+pub enum Kind as u8:
+    application = 0
+    static_files = 1
+    websocket = 2
+
+pub struct Route:
+    pub var method: str
+    pub var pattern: str
+    pub var identifier: i64
+    pub var kind: Kind
+    pub var root: files.Directory
+    pub var protocol: str
+
+    pub mutating func destroy():
+        storage.release(self.method)
+        storage.release(self.pattern)
+        storage.release(self.protocol)
+        self.root.destroy()
+
+pub struct Table:
+    pub var entries: Route[128]
+    pub var count: usize
+
+    pub mutating func add(method: str, pattern: str, identifier: i64, kind: Kind = Kind.application, protocol: str = "") -> usize!:
+        try url.validate_pattern(pattern)
+        if method.length == 0:
+            error(storage.invalid, "a route needs a method")
+        for byte in method.bytes:
+            if byte < 'A' or byte > 'Z':
+                error(storage.invalid, "route methods must be uppercase ASCII")
+        for entry in self.entries[..<self.count]:
+            if entry.method == method and entry.pattern == pattern and ((entry.kind == Kind.static_files) == (kind == Kind.static_files)):
+                error(storage.conflict, "this route is already registered")
+        if self.count == self.entries.length:
+            error(storage.limit, "the route table is full")
+        let copied_method = try storage.copy(method)
+        errdefer storage.release(copied_method)
+        let copied_pattern = try storage.copy(pattern)
+        errdefer storage.release(copied_pattern)
+        let copied_protocol = try storage.copy(protocol)
+        self.entries[self.count] = Route(method = copied_method, pattern = copied_pattern, identifier = identifier, kind = kind, protocol = copied_protocol)
+        let index = self.count
+        self.count += 1
+        return index
+
+    ## Exact method routes take precedence over HEAD's GET fallback. A literal
+    ## route outranks a parameter route; otherwise registration order is stable.
+    pub func find(method: str, path: str) -> usize?:
+        var fallback: usize? = none
+        for pass in 0..<2:
+            for index in 0..<self.count:
+                let entry = self.entries[index]
+                if entry.kind == Kind.static_files:
+                    continue
+                let wanted = "GET" if pass == 1 else method
+                if entry.method != wanted or not url.matches(entry.pattern, path):
+                    continue
+                if entry.pattern == path:
+                    return index
+                if fallback == none:
+                    fallback = index
+            if fallback != none:
+                return fallback
+            if method != "HEAD":
+                break
+        return none
+
+    pub func mount(path: str) -> usize?:
+        var result: usize? = none
+        var longest: usize = 0
+        for index in 0..<self.count:
+            let entry = self.entries[index]
+            if entry.kind != Kind.static_files:
+                continue
+            let prefix = entry.pattern
+            if prefix == "/" or (path.length >= prefix.length and (str)path.bytes[..<prefix.length] == prefix and (path.length == prefix.length or prefix.bytes[prefix.length - 1] == '/' or path.bytes[prefix.length] == '/')):
+                if prefix.length > longest:
+                    result = index
+                    longest = prefix.length
+        return result
+
+    pub mutating func destroy():
+        for index in 0..<self.count:
+            self.entries[index].destroy()
+        self.count = 0

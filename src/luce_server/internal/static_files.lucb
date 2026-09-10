@@ -1,0 +1,157 @@
+## Mounts retain an opened root. Each decoded path component is opened relative
+## to the previous directory, refusing symlinks at every step. Open metadata,
+## ranges and streaming reads refer to the same regular file descriptor.
+import c
+import files
+import strings
+import paths
+import luce_server.internal.model
+import luce_server.internal.routes
+import luce_server.internal.responses
+import luce_server.internal.storage
+import luce_server.internal.url
+
+pub func media_type(path: str) -> str:
+    let extension = paths.extension(path)
+    if extension == ".html" or extension == ".htm": return "text/html; charset=utf-8"
+    if extension == ".css": return "text/css; charset=utf-8"
+    if extension == ".js" or extension == ".mjs": return "text/javascript; charset=utf-8"
+    if extension == ".json": return "application/json"
+    if extension == ".txt" or extension == ".md": return "text/plain; charset=utf-8"
+    if extension == ".svg": return "image/svg+xml"
+    if extension == ".png": return "image/png"
+    if extension == ".jpg" or extension == ".jpeg": return "image/jpeg"
+    if extension == ".gif": return "image/gif"
+    if extension == ".ico": return "image/x-icon"
+    if extension == ".pdf": return "application/pdf"
+    if extension == ".wasm": return "application/wasm"
+    if extension == ".woff2": return "font/woff2"
+    return "application/octet-stream"
+
+func open_beneath(root: files.Directory*, relative: str) -> files.File!:
+    var owned: files.Directory
+    defer owned.destroy()
+    var parent = root
+    var at: usize = 0
+    while let part = url.segment(relative, &at):
+        if part == "." or part == ".." or part.length == 0:
+            error(storage.invalid, "invalid static path component")
+        let name = try storage.copy(part)
+        defer storage.release(name)
+        if at >= relative.length:
+            var opened = try parent.open_file((c.str)name, follow_symlinks = false, nonblocking = true)
+            errdefer opened.destroy()
+            let info = try opened.metadata()
+            if info.kind != files.FileKind.regular:
+                error(files.missing, "static content is not a regular file")
+            return opened
+        let child = try parent.open_directory((c.str)name, false)
+        owned.destroy()
+        owned = child
+        parent = &owned
+    error(files.missing, "static path has no filename")
+
+func number(text: str) -> u64?:
+    if text.length == 0:
+        return none
+    var value: u64 = 0
+    for byte in text.bytes:
+        if byte < '0' or byte > '9':
+            return none
+        value = value *? 10 else return none
+        value = value +? (u64)(byte - '0') else return none
+    return value
+
+## None denotes an unsatisfiable or unsupported range. Multiple ranges are
+## ignored by serve(): this implementation sends one contiguous representation.
+pub func byte_range(value: str, length: u64) -> (u64, u64)?:
+    if not strings.starts_with(value, "bytes=") or length == 0:
+        return none
+    let range = (str)value.bytes[6..]
+    let dash = strings.find(range, "-") else return none
+    if dash == 0:
+        let suffix = number((str)range.bytes[1..]) else return none
+        if suffix == 0:
+            return none
+        let count = suffix if suffix < length else length
+        return (length - count, count)
+    let start = number((str)range.bytes[..<dash]) else return none
+    if start >= length:
+        return none
+    let end_text = (str)range.bytes[dash + 1..]
+    let end = (number(end_text) else return none) if end_text.length > 0 else length - 1
+    if end < start:
+        return none
+    return (start, (end if end < length else length - 1) - start + 1)
+
+func matches_tag(value: str, tag: str) -> bool:
+    var at: usize = 0
+    while at < value.length:
+        let start = at
+        while at < value.length and value.bytes[at] != ',':
+            at += 1
+        var part = strings.trim((str)value.bytes[start..<at])
+        if strings.starts_with(part, "W/"):
+            part = (str)part.bytes[2..]
+        if part == "*" or part == tag:
+            return true
+        at += 1
+    return false
+
+pub func serve(request: model.Pending*, mount: routes.Route*) -> !:
+    if request.head.method != "GET" and request.head.method != "HEAD":
+        try responses.content(request, 405, "text/plain; charset=utf-8", "method not allowed\n".bytes)
+        try responses.field(request, "Allow", "GET, HEAD")
+        return
+    var relative = storage.Buffer(maximum = 8192)
+    defer relative.destroy()
+    var start = mount.pattern.length
+    if mount.pattern == "/":
+        start = 1
+    elif start < request.path.length and request.path.bytes[start] == '/':
+        start += 1
+    try relative.append(request.path.bytes[start..])
+    if relative.used == 0 or relative.data[relative.used - 1] == '/':
+        try relative.append("index.html".bytes)
+    let filename = (str)relative.view()
+    var opened = open_beneath(&mount.root, filename) catch failure:
+        if failure.code == files.missing or failure.code == files.not_directory or failure.code == files.symlink_loop or failure.code == files.permission_denied:
+            try responses.content(request, 404, "text/plain; charset=utf-8", "not found\n".bytes)
+            return
+        error(failure.code, failure.message)
+    errdefer opened.destroy()
+    let info = try opened.metadata()
+    if info.size < 0:
+        error(storage.invalid, "the static file has an invalid size")
+    let length = (u64)info.size
+    var tag_buffer: u8[160]
+    let tag = try format(tag_buffer, f"\"{info.device}-{info.inode}-{info.size}-{info.modified.seconds}-{info.modified.nanoseconds}\"")
+    try responses.content(request, 200, media_type(filename), "".bytes)
+    try responses.field(request, "ETag", tag)
+    try responses.field(request, "Accept-Ranges", "bytes")
+    if let condition = request.head.field("If-None-Match"):
+        if matches_tag(condition, tag):
+            request.response_status = 304
+            opened.destroy()
+            return
+    var offset: u64 = 0
+    var count = length
+    if request.head.method == "GET":
+        if let range = request.head.field("Range"):
+            let if_range = request.head.field("If-Range")
+            if (if_range == none or if_range == tag) and strings.starts_with(range, "bytes=") and not strings.contains(range, ","):
+                var range_buffer: u8[96]
+                if let selected = byte_range(range, length):
+                    offset = selected.0
+                    count = selected.1
+                    request.response_status = 206
+                    try responses.field(request, "Content-Range", try format(range_buffer, f"bytes {offset}-{offset + count - 1}/{length}"))
+                else:
+                    request.response_status = 416
+                    try responses.field(request, "Content-Range", try format(range_buffer, f"bytes */{length}"))
+                    opened.destroy()
+                    return
+    discard(try opened.seek((i64)offset))
+    request.response_file = opened
+    request.response_file_length = count
+    request.response_is_file = true

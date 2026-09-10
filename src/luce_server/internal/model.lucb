@@ -1,0 +1,291 @@
+## Shared server state and explicit reference ownership. The server owner keeps
+## network threads alive through join; workers and requests retain the state
+## independently so shutdown cannot invalidate a Luce handle still in scope.
+import memory
+import net
+import files
+import sync
+import thread
+import time
+import luce_server.internal.routes
+import luce_server.internal.storage
+import luce_server.internal.body
+
+pub struct Config:
+    pub var network_threads: usize = 8
+    pub var request_timeout_ms: u64 = 30000
+    pub var idle_timeout_ms: u64 = 5000
+    pub var response_timeout_ms: u64 = 30000
+    pub var application_timeout_ms: u64 = 30000
+    pub var body_limit: usize = 67108864
+    pub var memory_body_limit: usize = 65536
+    pub var response_limit: usize = 1048576
+    pub var requests_per_connection: usize = 100
+    pub var raw_socket: bool
+    pub var shutdown_timeout_ms: u64 = 5000
+
+pub struct State:
+    pub var references: @u64
+    pub var token: i64
+    pub var config: Config
+    pub var temporary_directory: str
+    pub var table: routes.Table
+    pub var listener: net.Listener
+    pub var cancellation: net.Cancellation
+    pub var draining: @bool
+    pub var drain_until: u64
+    pub var lock: sync.Mutex
+    pub var ready: sync.Condition
+    pub var changed: sync.Condition
+    pub var join_lock: sync.Mutex
+    pub var started: @bool
+    pub var joined: bool
+    pub var threads: thread.Handle[65]
+    pub var thread_count: usize
+    pub var queue: Pending*?[64]
+    pub var queue_head: usize
+    pub var queue_count: usize
+    pub var waiting: usize
+    pub var accepted: @u64
+    pub var completed: @u64
+    pub var failures: @u64
+    pub var active: @u64
+    pub var outstanding: @u64
+
+pub enum EventKind as u8:
+    http = 0
+    websocket_text = 1
+    websocket_binary = 2
+    socket_data = 3
+    websocket_open = 4
+
+pub struct Pending:
+    pub var references: @u64
+    pub var owner: State*
+    pub var kind: EventKind
+    pub var wire: storage.Buffer
+    pub var path_buffer: storage.Buffer
+    pub var scratch: storage.Buffer
+    pub var loaded: storage.Buffer
+    pub var fields: net.HttpField[100]
+    pub var head: net.HttpHead
+    pub var path: str
+    pub var route_index: usize
+    pub var route_identifier: i64
+    pub var payload: body.Body
+    pub var response: storage.Buffer
+    pub var response_type: storage.Buffer
+    pub var response_headers: storage.Buffer
+    pub var response_file: files.File
+    pub var response_file_length: u64
+    pub var response_status: u16 = 200
+    pub var response_is_file: bool
+    pub var stop_after_response: bool
+    pub var close_after_response: bool
+    ## Protected by owner.lock. Response storage becomes immutable at done=true.
+    pub var done: bool
+    pub var abandoned: bool
+    pub var expired: bool
+
+pub func retain(state: State*):
+    discard(state.references.add(1, .relaxed))
+
+pub func release(state: State*):
+    if state.references.sub(1, .acq_rel) != 1:
+        return
+    state.table.destroy()
+    state.listener.destroy()
+    storage.release(state.temporary_directory)
+    free(state) in memory.heap
+
+pub func make_request(state: State*) -> Pending*!:
+    let before = state.outstanding.add(1, .acq_rel)
+    if before >= state.config.network_threads * 4:
+        discard(state.outstanding.sub(1, .acq_rel))
+        error(storage.limit, "too many application request handles remain open")
+    errdefer discard(state.outstanding.sub(1, .acq_rel))
+    let request = try new Pending(owner = state,
+        wire = storage.Buffer(maximum = 32768),
+        path_buffer = storage.Buffer(maximum = 8192),
+        scratch = storage.Buffer(maximum = 8192),
+        loaded = storage.Buffer(maximum = state.config.response_limit),
+        payload = body.Body(bytes = storage.Buffer(maximum = state.config.memory_body_limit), maximum = state.config.body_limit),
+        response = storage.Buffer(maximum = state.config.response_limit),
+        response_type = storage.Buffer(maximum = 256),
+        response_headers = storage.Buffer(maximum = 8192)) in memory.heap
+    request.references.store(1, .relaxed)
+    retain(state)
+    return request
+
+pub func retain_request(request: Pending*):
+    discard(request.references.add(1, .relaxed))
+
+pub func release_request(request: Pending*):
+    if request.references.sub(1, .acq_rel) != 1:
+        return
+    let state = request.owner
+    request.wire.destroy()
+    request.path_buffer.destroy()
+    request.scratch.destroy()
+    request.loaded.destroy()
+    request.payload.destroy()
+    request.response.destroy()
+    request.response_type.destroy()
+    request.response_headers.destroy()
+    request.response_file.destroy()
+    free(request) in memory.heap
+    discard(state.outstanding.sub(1, .acq_rel))
+    release(state)
+
+## A queue owns one reference, transferred to the application by take(). A
+## timeout can remove a queued request without racing an application's claim.
+pub func submit(request: Pending*) -> bool:
+    let state = request.owner
+    state.lock.lock()
+    defer state.lock.unlock()
+    if state.cancellation.is_requested() or state.queue_count == state.queue.length:
+        return false
+    retain_request(request)
+    state.queue[(state.queue_head + state.queue_count) % state.queue.length] = request
+    state.queue_count += 1
+    state.ready.signal()
+    state.waiting += 1
+    let deadline = time.now() + state.config.application_timeout_ms * 1000000
+    while not request.done and not state.cancellation.is_requested() and time.now() < deadline:
+        state.changed.wait(&state.lock)
+    state.waiting -= 1
+    if not request.done:
+        request.expired = true
+        remove_queued(state, request)
+    return request.done and not request.abandoned and not request.expired
+
+## Called with the state lock. Remove a timed-out entry immediately so absent
+## application workers cannot accumulate temporary files or stale queue slots.
+func remove_queued(state: State*, request: Pending*):
+    for offset in 0..<state.queue_count:
+        let slot = (state.queue_head + offset) % state.queue.length
+        if state.queue[slot] != request:
+            continue
+        var next = offset + 1
+        while next < state.queue_count:
+            state.queue[(state.queue_head + next - 1) % state.queue.length] = state.queue[(state.queue_head + next) % state.queue.length]
+            next += 1
+        state.queue[(state.queue_head + state.queue_count - 1) % state.queue.length] = none
+        state.queue_count -= 1
+        release_request(request)
+        return
+
+pub func take(state: State*) -> Pending*?:
+    state.lock.lock()
+    defer state.lock.unlock()
+    while true:
+        while state.queue_count > 0:
+            let request = state.queue[state.queue_head] else trap("request queue lost an entry")
+            state.queue[state.queue_head] = none
+            state.queue_head = (state.queue_head + 1) % state.queue.length
+            state.queue_count -= 1
+            if request.expired or state.cancellation.is_requested():
+                release_request(request)
+                continue
+            return request
+        if state.cancellation.is_requested():
+            return none
+        state.ready.wait(&state.lock)
+
+pub func abandon(request: Pending*):
+    let state = request.owner
+    state.lock.lock()
+    if not request.done:
+        request.abandoned = true
+        request.done = true
+        state.changed.broadcast()
+    state.lock.unlock()
+    release_request(request)
+
+pub func stop(state: State*):
+    state.cancellation.request()
+    state.lock.lock()
+    state.ready.broadcast()
+    state.changed.broadcast()
+    state.lock.unlock()
+
+pub func begin_drain(state: State*):
+    state.lock.lock()
+    if not state.draining.load(.relaxed):
+        state.drain_until = time.now() + state.config.shutdown_timeout_ms * 1000000
+        state.draining.store(true, .release)
+    state.lock.unlock()
+
+## Timed response waits use a single shared clock thread because sync.Condition
+## has no timed-wait operation. Idle application workers are not woken by ticks.
+pub func clock_worker(context: void*?):
+    let state = (State*)(context else return)
+    while not state.cancellation.is_requested():
+        thread.sleep(10)
+        if state.draining.load(.acquire):
+            if state.active.load(.acquire) == 0 or time.now() >= state.drain_until:
+                stop(state)
+                return
+        state.lock.lock()
+        if state.waiting > 0:
+            state.changed.broadcast()
+        state.lock.unlock()
+
+## Registry tokens are opaque, nonrecycled integers, never encoded pointers.
+## Attaching under the registry lock retains the state before close can remove it.
+var registry_lock: sync.Mutex
+var registry: State*?[64]
+var next_token: i64 = 1
+
+pub func register(state: State*) -> !:
+    registry_lock.lock()
+    defer registry_lock.unlock()
+    if next_token == 9223372036854775807:
+        error(storage.limit, "server worker tokens are exhausted")
+    for index in 0..<registry.length:
+        if registry[index] == none:
+            state.token = next_token
+            next_token += 1
+            registry[index] = state
+            return
+    error(storage.limit, "too many server instances")
+
+pub func attach(token: i64) -> State*!:
+    registry_lock.lock()
+    defer registry_lock.unlock()
+    for item in registry:
+        if let state = item:
+            if state.token == token and not state.cancellation.is_requested():
+                retain(state)
+                return state
+    error(storage.closed, "the server worker token is no longer active")
+
+pub func unregister(state: State*):
+    registry_lock.lock()
+    defer registry_lock.unlock()
+    for index in 0..<registry.length:
+        if registry[index] == state:
+            registry[index] = none
+
+## Caller owns the server handle and serializes lifecycle calls. join_lock also
+## makes an explicit stop/join followed by handle destruction harmless.
+pub func join(state: State*):
+    stop(state)
+    state.join_lock.lock()
+    defer state.join_lock.unlock()
+    if state.joined:
+        return
+    for index in 0..<state.thread_count:
+        state.threads[index].join() catch:
+            trap("a server thread could not be joined")
+    state.thread_count = 0
+    state.joined = true
+    state.listener.destroy()
+    state.lock.lock()
+    while state.queue_count > 0:
+        let request = state.queue[state.queue_head] else trap("request queue lost an entry")
+        state.queue[state.queue_head] = none
+        state.queue_head = (state.queue_head + 1) % state.queue.length
+        state.queue_count -= 1
+        release_request(request)
+    state.lock.unlock()

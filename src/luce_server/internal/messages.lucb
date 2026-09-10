@@ -1,0 +1,99 @@
+## Message dispatch reuses the bounded application queue. Luce callbacks never
+## run here: only the application worker that takes a handle runs user code.
+import io
+import net
+import luce_server.internal.model
+import luce_server.internal.storage
+import luce_server.internal.wire
+
+func message(opening: model.Pending*, kind: model.EventKind) -> model.Pending*!:
+    let request = try model.make_request(opening.owner)
+    errdefer model.release_request(request)
+    request.kind = kind
+    request.route_index = opening.route_index
+    request.route_identifier = opening.route_identifier
+    try request.wire.append(opening.wire.view())
+    request.head = try net.http_parse_request(request.wire.view(), request.fields)
+    try request.path_buffer.append(opening.path.bytes)
+    request.path = (str)request.path_buffer.view()
+    return request
+
+pub func websocket(connection: net.Connection*, input: wire.Input*, opening: model.Pending*) -> !:
+    let state = opening.owner
+    var decoder = net.WebSocketDecoder.create(true, (u64)state.config.body_limit, (u64)state.config.body_limit)
+    var encoder = net.WebSocketEncoder.create(false, (u64)state.config.response_limit, (u64)state.config.response_limit)
+    var pending: model.Pending*? = none
+    defer discard_pending(&pending)
+    var control = storage.Buffer(maximum = 125)
+    defer control.destroy()
+    var output: u8[16384]
+    while not state.cancellation.is_requested():
+        if state.draining.load(.acquire):
+            var destination = try wire.stream(connection, state, 1000)
+            try encoder.write(&destination, net.WebSocketOpcode.close, b"\x03\xe9")
+            return
+        var source = try wire.stream(connection, state, state.config.idle_timeout_ms)
+        if input.available().length == 0 and not try input.fill(&source):
+            try decoder.finish()
+            return
+        let step = try decoder.consume(input.available(), output)
+        input.consume(step.consumed)
+        if (u8)step.opcode >= 8:
+            if step.frame_start:
+                control.clear()
+            try control.append(output[..<step.written])
+            if step.frame_end:
+                var destination = try wire.stream(connection, state, state.config.response_timeout_ms)
+                if step.opcode == net.WebSocketOpcode.ping:
+                    try encoder.write(&destination, net.WebSocketOpcode.pong, control.view())
+                elif step.opcode == net.WebSocketOpcode.close:
+                    try encoder.write(&destination, net.WebSocketOpcode.close, control.view())
+                    return
+            continue
+        if step.frame_start and step.opcode != net.WebSocketOpcode.continuation:
+            pending = try message(opening, model.EventKind.websocket_text if step.opcode == net.WebSocketOpcode.text else model.EventKind.websocket_binary)
+        if let request = pending:
+            try request.payload.append(output[..<step.written], state.temporary_directory)
+            if step.message_end:
+                if not model.submit(request):
+                    var destination = try wire.stream(connection, state, 1000)
+                    try encoder.write(&destination, net.WebSocketOpcode.close, b"\x03\xf3")
+                    return
+                var destination = try wire.stream(connection, state, state.config.response_timeout_ms)
+                let opcode = net.WebSocketOpcode.text if request.kind == model.EventKind.websocket_text else net.WebSocketOpcode.binary
+                try encoder.write(&destination, opcode, request.response.view())
+                let close = request.close_after_response
+                let shutdown = request.stop_after_response
+                model.release_request(request)
+                pending = none
+                discard(state.completed.add(1, .relaxed))
+                if shutdown:
+                    model.begin_drain(state)
+                if close:
+                    try encoder.write(&destination, net.WebSocketOpcode.close, b"\x03\xe8")
+                    return
+
+func discard_pending(pending: model.Pending*?*):
+    if let remaining = *pending:
+        model.release_request(remaining)
+
+pub func socket(connection: net.Connection*, state: model.State*) -> !:
+    var input: u8[16384]
+    while not state.cancellation.is_requested() and not state.draining.load(.acquire):
+        var source = try wire.stream(connection, state, state.config.idle_timeout_ms)
+        let count = try source.read(input)
+        if count == 0:
+            return
+        let request = try model.make_request(state)
+        defer model.release_request(request)
+        request.kind = model.EventKind.socket_data
+        try request.payload.append(input[..<count], state.temporary_directory)
+        if not model.submit(request):
+            return
+        var destination = try wire.stream(connection, state, state.config.response_timeout_ms)
+        try io.write_all(&destination, request.response.view())
+        discard(state.completed.add(1, .relaxed))
+        if request.stop_after_response:
+            model.begin_drain(state)
+        if request.close_after_response:
+            return

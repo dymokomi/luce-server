@@ -1,0 +1,78 @@
+## Fixed connection input storage preserves bytes beyond a head, body or frame.
+## All transfers use net's nonblocking deadline/cancellation adapter.
+import io
+import memory
+import net
+import luce_server.internal.model
+import luce_server.internal.storage
+
+pub struct Input:
+    pub var bytes: u8[32768]
+    pub var start: usize
+    pub var end: usize
+
+    pub func available() -> const u8[]:
+        return self.bytes[self.start..<self.end]
+
+    pub mutating func consume(count: usize):
+        assert(count <= self.end - self.start)
+        self.start += count
+        if self.start == self.end:
+            self.start = 0
+            self.end = 0
+
+    pub mutating func fill(source: io.Reader) -> bool!:
+        if self.start > 0:
+            memory.move(self.bytes, self.available(), self.end - self.start)
+            self.end -= self.start
+            self.start = 0
+        if self.end == self.bytes.length:
+            error(storage.limit, "connection input exceeds its bounded buffer")
+        let count = try source.read(self.bytes[self.end..])
+        self.end += count
+        return count != 0
+
+    pub mutating func head(source: io.Reader) -> const u8[]?!:
+        var scan: usize = 0
+        while true:
+            if let boundary = net.http_head_end(self.available(), scan):
+                return self.available()[..<boundary]
+            let length = self.end - self.start
+            scan = length - 3 if length > 3 else 0
+            if not try self.fill(source):
+                if self.end != self.start:
+                    error(io.unexpected_eof, "HTTP head ended prematurely")
+                return none
+
+pub func stream(connection: net.Connection*, state: model.State*, milliseconds: u64) -> net.DeadlineStream!:
+    return try net.DeadlineStream.over(connection, try net.Deadline.after(milliseconds * 1000000), &state.cancellation)
+
+pub func read_body(input: Input*, source: io.Reader, request: model.Pending*) -> !:
+    var decoder = try net.HttpBodyDecoder.create(request.head.body_kind, request.head.body_length, (u64)request.owner.config.body_limit)
+    while not decoder.finished():
+        if input.available().length == 0 and not try input.fill(source):
+            try decoder.finish()
+            break
+        let step = try decoder.consume(input.available())
+        try request.payload.append(step.body, request.owner.temporary_directory)
+        input.consume(step.consumed)
+    try decoder.finish()
+
+## The fallback is intentionally tiny and independent of response allocations.
+pub func fail(connection: net.Connection*, state: model.State*, status: u16):
+    var destination = stream(connection, state, state.config.response_timeout_ms) catch:
+        return
+    var bytes: u8[256]
+    let head = net.http_encode_head(bytes, net.HttpHead(method = "GET", version = "HTTP/1.1", status = status, body_kind = net.HttpBodyKind.empty)) catch:
+        return
+    io.write_all(&destination, head) catch:
+        return
+
+pub func error_status(code: ErrorCode) -> u16:
+    if code == net.timed_out:
+        return 408
+    if code == net.http_limit or code == storage.limit:
+        return 413
+    if code == net.http_unsupported:
+        return 501
+    return 400

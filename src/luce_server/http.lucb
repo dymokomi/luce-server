@@ -1,0 +1,308 @@
+## Public HTTP server API. Server owns the network pool; Worker belongs to one
+## application thread; Request owns one dequeued event and must be released.
+## Luce maps these handles to ARC objects. Base callers call their destroy
+## functions exactly once. Concurrent use of a single application handle is not
+## supported; attach separate workers to the opaque worker token instead.
+import c
+import files
+import net
+import strings
+import utf8
+import memory
+import luce_server.internal.model
+import luce_server.internal.pool
+import luce_server.internal.routes
+import luce_server.internal.responses
+import luce_server.internal.static_files as assets
+import luce_server.internal.storage
+import luce_server.internal.url
+
+## Use defaults() then change the fields needed by the application. All sizes
+## are bytes and timeouts are milliseconds. A zero port requests an OS-assigned port.
+pub struct Options:
+    pub var address: str = "127.0.0.1"
+    pub var port: i64 = 8080
+    pub var network_threads: i64 = 8
+    pub var backlog: i64 = 128
+    pub var request_timeout_ms: i64 = 30000
+    pub var idle_timeout_ms: i64 = 5000
+    pub var response_timeout_ms: i64 = 30000
+    pub var application_timeout_ms: i64 = 30000
+    pub var shutdown_timeout_ms: i64 = 5000
+    pub var body_limit: i64 = 67108864
+    pub var memory_body_limit: i64 = 65536
+    pub var response_limit: i64 = 1048576
+    pub var requests_per_connection: i64 = 100
+    pub var temporary_directory: str = "/tmp"
+
+pub struct Statistics:
+    pub var connections: i64
+    pub var active_connections: i64
+    pub var completed_requests: i64
+    pub var failures: i64
+    pub var outstanding_requests: i64
+
+pub handle Server:
+    destroy close_server
+
+pub handle Worker:
+    destroy close_worker
+
+pub handle Request:
+    destroy close_request
+
+pub func defaults() -> Options:
+    return Options()
+
+func timeout(value: i64) -> !:
+    if value < 1 or value > 3600000:
+        error(storage.invalid, "timeouts must be between 1 and 3600000 milliseconds")
+
+pub func open(options: Options) -> Server!:
+    let ip = net.IpAddress.parse(options.address) else error(storage.invalid, "listen address must be a numeric IPv4 or IPv6 address")
+    if options.port < 0 or options.port > 65535 or options.network_threads < 1 or options.network_threads > 64 or options.backlog < 1 or options.backlog > 65535:
+        error(storage.invalid, "invalid listener or thread configuration")
+    if options.body_limit < 1 or options.body_limit > 1073741824 or options.memory_body_limit < 0 or options.memory_body_limit > options.body_limit or options.response_limit < 1 or options.response_limit > 67108864 or options.requests_per_connection < 1 or options.requests_per_connection > 1000000:
+        error(storage.invalid, "invalid request or response limits")
+    try timeout(options.request_timeout_ms)
+    try timeout(options.idle_timeout_ms)
+    try timeout(options.response_timeout_ms)
+    try timeout(options.application_timeout_ms)
+    try timeout(options.shutdown_timeout_ms)
+    if strings.contains(options.temporary_directory, "\0"):
+        error(storage.invalid, "temporary directory contains NUL")
+    let temporary = try storage.copy(options.temporary_directory)
+    let state = new model.State(temporary_directory = temporary, config = model.Config(
+        network_threads = (usize)options.network_threads,
+        request_timeout_ms = (u64)options.request_timeout_ms,
+        idle_timeout_ms = (u64)options.idle_timeout_ms,
+        response_timeout_ms = (u64)options.response_timeout_ms,
+        application_timeout_ms = (u64)options.application_timeout_ms,
+        shutdown_timeout_ms = (u64)options.shutdown_timeout_ms,
+        body_limit = (usize)options.body_limit,
+        memory_body_limit = (usize)options.memory_body_limit,
+        response_limit = (usize)options.response_limit,
+        requests_per_connection = (usize)options.requests_per_connection)) in memory.heap catch failure:
+        storage.release(temporary)
+        error(failure.code, failure.message)
+    state.references.store(1, .relaxed)
+    errdefer model.release(state)
+    var directory = try files.Directory.open((c.str)temporary)
+    directory.destroy()
+    state.listener = try net.Listener.bind(net.SocketAddress(ip = ip, port = (u16)options.port), (i32)options.backlog)
+    try state.listener.set_nonblocking(true)
+    try model.register(state)
+    return (Server)(void*)state
+
+func configuring(server: Server) -> model.State*!:
+    let state = (model.State*)(void*)server
+    if state.started.load(.acquire) or state.cancellation.is_requested():
+        error(storage.closed, "server configuration is frozen after start")
+    return state
+
+## Patterns match decoded path segments; {name} captures exactly one segment.
+## The identifier is application-defined and returned by route_id(request).
+pub func route(server: Server, request_method: str, pattern: str, identifier: i64) -> !:
+    let state = try configuring(server)
+    discard(try state.table.add(request_method, pattern, identifier))
+
+## A WebSocket opening request is delivered to the application before upgrade.
+## Its handler approves Origin/authentication/subprotocol policy explicitly.
+pub func websocket_route(server: Server, pattern: str, identifier: i64) -> !:
+    let state = try configuring(server)
+    discard(try state.table.add("GET", pattern, identifier, routes.Kind.websocket))
+
+## Mounts serve regular files and index.html, with HEAD, validators and one byte
+## range. Roots stay open through shutdown; directory listings are not generated.
+pub func static_files(server: Server, prefix: str, directory: str) -> !:
+    let state = try configuring(server)
+    if strings.contains(prefix, "{") or strings.contains(directory, "\0"):
+        error(storage.invalid, "invalid static mount")
+    let root_path = try storage.copy(directory)
+    defer storage.release(root_path)
+    var root = try files.Directory.open((c.str)root_path, false)
+    errdefer root.destroy()
+    let index = try state.table.add("GET", prefix, 0, routes.Kind.static_files)
+    state.table.entries[index].root = root
+
+pub func start(server: Server) -> !:
+    try pool.start(try configuring(server))
+
+pub func port(server: Server) -> i64!:
+    return (i64)(try ((model.State*)(void*)server).listener.address()).port
+
+## Tokens may cross Luce worker boundaries; pointers and handles never do.
+## Each worker attaches its own owned handle. Closing the server revokes its token.
+pub func worker_token(server: Server) -> i64!:
+    let state = (model.State*)(void*)server
+    if not state.started.load(.acquire) or state.cancellation.is_requested():
+        error(storage.closed, "start the server before attaching application workers")
+    return state.token
+
+pub func attach(token: i64) -> Worker!:
+    return (Worker)(void*)(try model.attach(token))
+
+## Blocks for one event, or returns none after shutdown. The queue's reference
+## transfers to the returned handle; closing without a reply abandons the event.
+pub func next(worker: Worker) -> Request?:
+    let request = model.take((model.State*)(void*)worker) else return none
+    return (Request)(void*)request
+
+pub func route_id(request: Request) -> i64:
+    return ((model.Pending*)(void*)request).route_identifier
+
+pub func method(request: Request) -> str:
+    return ((model.Pending*)(void*)request).head.method
+
+pub func path(request: Request) -> str:
+    return ((model.Pending*)(void*)request).path
+
+pub func header(request: Request, name: str) -> str?:
+    return ((model.Pending*)(void*)request).head.field(name)
+
+pub func parameter(request: Request, name: str) -> str?:
+    let pending = (model.Pending*)(void*)request
+    return url.capture(pending.owner.table.entries[pending.route_index].pattern, pending.path, name)
+
+## This borrowed view expires on the next query call or request destruction.
+pub func query(request: Request, name: str) -> str?!:
+    let pending = (model.Pending*)(void*)request
+    return try url.query(pending.head.target, name, &pending.scratch)
+
+pub func body_size(request: Request) -> i64:
+    return (i64)((model.Pending*)(void*)request).payload.length
+
+## Explicit in-memory reads are capped by limit, independently of upload size.
+## The view expires at the next body read or request destruction; Luce copies it.
+pub func body_bytes(request: Request, limit: i64) -> const u8[]!:
+    let pending = (model.Pending*)(void*)request
+    if limit < 0 or limit > 67108864:
+        error(storage.invalid, "body read limit must be between zero and 64 MiB")
+    if pending.payload.length > (usize)limit:
+        error(storage.limit, "body exceeds the application's memory read limit")
+    pending.loaded.maximum = (usize)limit
+    return try pending.payload.load(&pending.loaded)
+
+pub func body_text(request: Request, limit: i64) -> str!:
+    let data = try body_bytes(request, limit)
+    var validator: utf8.Decoder
+    for byte in data:
+        discard(try validator.push(byte))
+    try validator.finish()
+    return (str)data
+
+## Store a fully received body atomically. The application chooses a destination;
+## an uploaded filename is never interpreted as a server path automatically.
+pub func save_body(request: Request, destination: str, replace: bool) -> !:
+    if destination.length == 0 or strings.contains(destination, "\0"):
+        error(storage.invalid, "invalid upload destination")
+    try ((model.Pending*)(void*)request).payload.save(destination, replace)
+
+func editable(pending: model.Pending*) -> !:
+    let state = pending.owner
+    state.lock.lock()
+    defer state.lock.unlock()
+    if pending.done or pending.expired or state.cancellation.is_requested():
+        error(storage.closed, "the request can no longer be answered")
+
+func commit(pending: model.Pending*) -> !:
+    let state = pending.owner
+    state.lock.lock()
+    defer state.lock.unlock()
+    if pending.done or pending.expired or state.cancellation.is_requested():
+        error(storage.closed, "the request can no longer be answered")
+    pending.done = true
+    state.changed.broadcast()
+
+pub func response_header(request: Request, name: str, value: str) -> !:
+    let pending = (model.Pending*)(void*)request
+    try editable(pending)
+    try responses.field(pending, name, value)
+
+pub func reply(request: Request, status: i64, content_type: str, data: const u8[]) -> !:
+    let pending = (model.Pending*)(void*)request
+    try editable(pending)
+    if pending.kind != model.EventKind.http and pending.kind != model.EventKind.websocket_open:
+        error(storage.invalid, "use send_message for a WebSocket or raw socket event")
+    try responses.content(pending, status, content_type, data)
+    try commit(pending)
+
+pub func text(request: Request, status: i64, value: str) -> !:
+    try reply(request, status, "text/plain; charset=utf-8", value.bytes)
+
+## The application supplies serialized JSON; this helper chooses its media type.
+pub func json(request: Request, status: i64, value: str) -> !:
+    try reply(request, status, "application/json", value.bytes)
+
+pub func reply_file(request: Request, filename: str) -> !:
+    let pending = (model.Pending*)(void*)request
+    try editable(pending)
+    if pending.kind != model.EventKind.http:
+        error(storage.invalid, "file responses require HTTP")
+    try responses.file(pending, filename, assets.media_type(filename))
+    try commit(pending)
+
+pub func is_websocket_open(request: Request) -> bool:
+    return ((model.Pending*)(void*)request).kind == model.EventKind.websocket_open
+
+pub func is_text_message(request: Request) -> bool:
+    return ((model.Pending*)(void*)request).kind == model.EventKind.websocket_text
+
+pub func accept_websocket(request: Request, protocol: str) -> !:
+    let pending = (model.Pending*)(void*)request
+    try editable(pending)
+    if pending.kind != model.EventKind.websocket_open:
+        error(storage.invalid, "request is not a WebSocket opening handshake")
+    var checked: u8[4096]
+    discard(try net.websocket_encode_response(checked, pending.head, protocol))
+    pending.response_type.clear()
+    try pending.response_type.append(protocol.bytes)
+    pending.response_status = 101
+    try commit(pending)
+
+pub func send_message(request: Request, data: const u8[]) -> !:
+    let pending = (model.Pending*)(void*)request
+    try editable(pending)
+    if pending.kind != model.EventKind.websocket_text and pending.kind != model.EventKind.websocket_binary and pending.kind != model.EventKind.socket_data:
+        error(storage.invalid, "request is not a WebSocket message or raw socket event")
+    if pending.kind == model.EventKind.websocket_text:
+        var validator: utf8.Decoder
+        for byte in data:
+            discard(try validator.push(byte))
+        try validator.finish()
+    pending.response.clear()
+    try pending.response.append(data)
+    try commit(pending)
+
+## Set these before replying. Shutdown drains active connections after this
+## reply is sent, then cancels survivors at the configured shutdown deadline.
+pub func shutdown_after_reply(request: Request) -> !:
+    let pending = (model.Pending*)(void*)request
+    try editable(pending)
+    pending.stop_after_response = true
+
+pub func close_after_reply(request: Request) -> !:
+    let pending = (model.Pending*)(void*)request
+    try editable(pending)
+    pending.close_after_response = true
+
+pub func shutdown(server: Server):
+    model.begin_drain((model.State*)(void*)server)
+
+pub func statistics(server: Server) -> Statistics:
+    let state = (model.State*)(void*)server
+    return Statistics(connections = (i64)state.accepted.load(.relaxed), active_connections = (i64)state.active.load(.relaxed),
+        completed_requests = (i64)state.completed.load(.relaxed), failures = (i64)state.failures.load(.relaxed),
+        outstanding_requests = (i64)state.outstanding.load(.relaxed))
+
+pub func close_request(request: Request):
+    model.abandon((model.Pending*)(void*)request)
+
+pub func close_worker(worker: Worker):
+    model.release((model.State*)(void*)worker)
+
+pub func close_server(server: Server):
+    let state = (model.State*)(void*)server
+    model.unregister(state)
+    model.join(state)
+    model.release(state)

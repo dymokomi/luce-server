@@ -1,0 +1,43 @@
+import luce_server.internal.storage
+import luce_server.internal.url
+import luce_server.internal.routes
+import luce_server.internal.model
+import luce_server.internal.wire
+import luce_server.internal.responses
+import luce_server.internal.static_files
+import luce_server.http
+
+func test_paths() -> !:
+    var buffer = storage.Buffer(maximum = 8192)
+    defer buffer.destroy()
+    assert((try url.request_path("/items/caf%C3%A9?q=one", &buffer)) == "/items/café")
+    assert((try url.query("/?a=one+two&b=3", "a", &buffer)) == "one two")
+    assert(url.matches("/items/{id}", "/items/7"))
+    assert(not url.matches("/items/{id}", "/items/7/"))
+    assert(url.capture("/items/{id}", "/items/7", "id") == "7")
+    let bad: str[6] = ["/a/../b", "/a/%2e%2e/b", "/a%2fb", "/a%00b", "/a//b", "/%ff"]
+    for value in bad:
+        var refused = false
+        discard(url.request_path(value, &buffer) catch:
+            refused = true
+            recover "")
+        assert(refused)
+
+func test_routes() -> !:
+    var table: routes.Table
+    defer table.destroy()
+    discard(try table.add("GET", "/items/{id}", 1))
+    discard(try table.add("GET", "/items/recent", 2))
+    discard(try table.add("POST", "/items", 3))
+    assert(table.find("GET", "/items/recent") == 1)
+    assert(table.find("HEAD", "/items/8") == 0)
+    assert(table.find("DELETE", "/items/8") == none)
+    assert(static_files.byte_range("bytes=2-4", 8) == ((u64)2, (u64)3))
+    assert(static_files.byte_range("bytes=-3", 8) == ((u64)5, (u64)3))
+    assert(static_files.byte_range("bytes=8-", 8) == none)
+
+pub func main(arguments: str[]) -> i32!:
+    try test_paths()
+    try test_routes()
+    print("ok URL decoding and deterministic routing")
+    return 0

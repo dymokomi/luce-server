@@ -1,0 +1,79 @@
+## Bodies stay in bounded memory until the threshold, then spill to an owned
+## temporary file. Network input is streamed; file size is never an allocation.
+import c
+import files
+import io
+import memory
+import paths
+import luce_server.internal.storage
+
+pub struct Body:
+    pub var bytes: storage.Buffer
+    pub var temporary: files.TemporaryFile
+    pub var spilled: bool
+    pub var length: usize
+    pub var maximum: usize = 67108864
+
+    pub mutating func append(input: const u8[], directory: str) -> !:
+        if input.length > self.maximum - self.length:
+            error(storage.limit, "request body exceeds its configured limit")
+        if not self.spilled and input.length > self.bytes.maximum - self.bytes.used:
+            with memory.heap:
+                self.temporary = try files.TemporaryFile.create((c.str)directory)
+            self.spilled = true
+            try io.write_all(&self.temporary, self.bytes.view())
+            self.bytes.destroy()
+        if self.spilled:
+            try io.write_all(&self.temporary, input)
+        else:
+            try self.bytes.append(input)
+        self.length += input.length
+
+    ## Read the whole body only under the caller's explicit memory budget.
+    ## A spooled body's position is rewound; the returned view belongs to output.
+    pub mutating func load(output: storage.Buffer*) -> const u8[]!:
+        if self.length > output.maximum:
+            error(storage.limit, "body is too large for an in-memory read")
+        if not self.spilled:
+            return self.bytes.view()
+        output.clear()
+        discard(try self.temporary.seek(0))
+        var block: u8[16384]
+        var remaining = self.length
+        while remaining > 0:
+            let amount = remaining if remaining < block.length else block.length
+            let count = try self.temporary.read(block[..<amount])
+            if count == 0:
+                error(io.unexpected_eof, "the spooled body was truncated")
+            try output.append(block[..<count])
+            remaining -= count
+        return output.view()
+
+    ## Publish through a temporary sibling. Until the full copy and rename
+    ## succeed, the destination is unchanged. Paths come from application policy.
+    pub mutating func save(destination: str, replace: bool) -> !:
+        let owned = try storage.copy(destination)
+        defer storage.release(owned)
+        let directory = try storage.copy(paths.directory(destination))
+        defer storage.release(directory)
+        with memory.heap:
+            var target = try files.TemporaryFile.create((c.str)directory)
+            defer target.destroy()
+            if self.spilled:
+                discard(try self.temporary.seek(0))
+                var block: u8[16384]
+                var remaining = self.length
+                while remaining > 0:
+                    let amount = remaining if remaining < block.length else block.length
+                    let count = try self.temporary.read(block[..<amount])
+                    if count == 0:
+                        error(io.unexpected_eof, "the spooled body was truncated")
+                    try io.write_all(&target, block[..<count])
+                    remaining -= count
+            else:
+                try io.write_all(&target, self.bytes.view())
+            try target.publish((c.str)owned, replace)
+
+    pub mutating func destroy():
+        self.bytes.destroy()
+        self.temporary.destroy()

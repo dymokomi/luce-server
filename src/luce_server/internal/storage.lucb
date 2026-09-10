@@ -1,0 +1,60 @@
+## Heap ownership shared by network and application threads. Every allocation
+## names memory.heap explicitly; no result depends on a caller's scoped arena.
+import memory
+import io
+
+pub let invalid: ErrorCode = ErrorCode.package(1)
+pub let limit: ErrorCode = ErrorCode.package(2)
+pub let closed: ErrorCode = ErrorCode.package(3)
+pub let conflict: ErrorCode = ErrorCode.package(4)
+
+pub func copy(text: str) -> str!:
+    let room = try alloc u8[text.length + 1] in memory.heap
+    memory.copy(room, text.bytes, text.length)
+    room[text.length] = 0
+    return (str)room[..<text.length]
+
+pub func release(text: str):
+    free(u8[]((u8*)text.bytes.data, text.length + 1)) in memory.heap
+
+## A bounded growable byte buffer. A view expires on append, clear or destroy.
+## Empty buffers own no allocation. Copies must not be independently destroyed.
+pub struct Buffer: io.Writer:
+    pub var data: u8[]
+    pub var used: usize
+    pub var maximum: usize = 1048576
+
+    pub func view() -> const u8[]:
+        return self.data[..<self.used]
+
+    pub mutating func append(input: const u8[]) -> !:
+        if input.length > self.maximum - self.used:
+            error(limit, "the buffer limit was exceeded")
+        let needed = self.used + input.length
+        if needed > self.data.length:
+            var capacity: usize = 256 if self.data.length == 0 else self.data.length
+            while capacity < needed:
+                capacity = self.maximum if capacity > self.maximum // 2 else capacity * 2
+            if capacity > self.maximum:
+                capacity = self.maximum
+            let grown = try alloc u8[capacity] in memory.heap
+            memory.copy(grown, self.view(), self.used)
+            if self.data.length > 0:
+                free(self.data) in memory.heap
+            self.data = grown
+        memory.copy(self.data[self.used..], input, input.length)
+        self.used = needed
+
+    pub mutating func write(input: const u8[]) -> usize!:
+        try self.append(input)
+        return input.length
+
+    pub mutating func clear():
+        self.used = 0
+
+    pub mutating func destroy():
+        if self.data.length > 0:
+            free(self.data) in memory.heap
+        var empty: u8[]
+        self.data = empty
+        self.used = 0

@@ -1,0 +1,124 @@
+## Independent clients drive this Base consumer. Application workers deliberately
+## exercise concurrent dispatch, abandonment and late replies during shutdown.
+import io
+import strings
+import thread
+import time
+import luce_server.http
+import luce_server.socket
+import luce_server.websocket
+
+struct Application:
+    var token: i64
+    var upload_directory: str
+    var raw: bool
+
+var parallel_handlers: @u64
+var peak_handlers: @u64
+
+func dispatch(request: http.Request, application: Application*) -> !:
+    if application.raw:
+        let bytes = try http.body_bytes(request, 1048576)
+        if (str)bytes == "stop":
+            try http.shutdown_after_reply(request)
+        try socket.send(request, bytes)
+        return
+    let identifier = http.route_id(request)
+    if identifier == 1:
+        try http.json(request, 200, "{\"ok\":true}")
+    elif identifier == 2:
+        try http.reply(request, 200, "application/octet-stream", try http.body_bytes(request, 1048576))
+    elif identifier == 3:
+        try http.text(request, 200, http.parameter(request, "id") else "missing")
+    elif identifier == 4:
+        try http.text(request, 200, (try http.query(request, "name")) else "missing")
+    elif identifier == 5 or identifier == 6:
+        var path: u8[4096]
+        let name = http.parameter(request, "name") else "missing"
+        let destination = try format(path, f"{application.upload_directory}/{name}")
+        if identifier == 5:
+            try http.save_body(request, destination, false)
+            try http.json(request, 201, "{\"stored\":true}")
+        else:
+            try http.reply_file(request, destination)
+    elif identifier == 7:
+        try http.shutdown_after_reply(request)
+        try http.text(request, 200, "bye")
+    elif identifier == 8:
+        return
+    elif identifier == 9:
+        thread.sleep(800)
+        try http.text(request, 200, "late")
+    elif identifier == 10:
+        let active = parallel_handlers.add(1, .acq_rel) + 1
+        var peak = peak_handlers.load(.acquire)
+        while peak < active:
+            let (changed, observed) = peak_handlers.cas(peak, active, .acq_rel, .acquire)
+            if changed:
+                break
+            peak = observed
+        thread.sleep(100)
+        discard(parallel_handlers.sub(1, .acq_rel))
+        var buffer: u8[64]
+        try http.text(request, 200, try format(buffer, f"{peak_handlers.load(.acquire)}"))
+    elif identifier == 11:
+        if http.is_websocket_open(request):
+            if http.header(request, "Origin") == "http://blocked.test":
+                try http.text(request, 403, "origin refused")
+            else:
+                try websocket.accept(request, "")
+        else:
+            try websocket.send(request, try http.body_bytes(request, 1048576))
+    else:
+        try http.text(request, 500, "unregistered handler")
+
+func application_worker(context: void*?):
+    let application = (Application*)(context else return)
+    let worker = http.attach(application.token) catch:
+        return
+    defer http.close_worker(worker)
+    while let request = http.next(worker):
+        defer http.close_request(request)
+        dispatch(request, application) catch failure:
+            http.text(request, 500, "handler failed") catch:
+                discard(0)
+
+pub func main(arguments: str[]) -> i32!:
+    if arguments.length != 4:
+        return 2
+    var options = http.defaults()
+    options.port = 0
+    options.network_threads = 8
+    options.request_timeout_ms = 700
+    options.idle_timeout_ms = 700
+    options.application_timeout_ms = 300
+    options.response_timeout_ms = 700
+    options.shutdown_timeout_ms = 250
+    options.memory_body_limit = 1024
+    options.body_limit = 8388608
+    options.temporary_directory = arguments[2]
+    let raw = arguments[3] == "raw"
+    let server = try socket.open(options) if raw else try http.open(options)
+    defer http.close_server(server)
+    if not raw:
+        try http.route(server, "GET", "/ping", 1)
+        try http.route(server, "POST", "/echo", 2)
+        try http.route(server, "GET", "/items/{id}", 3)
+        try http.route(server, "GET", "/query", 4)
+        try http.route(server, "PUT", "/upload/{name}", 5)
+        try http.route(server, "GET", "/files/{name}", 6)
+        try http.route(server, "POST", "/shutdown", 7)
+        try http.route(server, "POST", "/abandon", 8)
+        try http.route(server, "GET", "/slow", 9)
+        try http.route(server, "GET", "/parallel", 10)
+        try websocket.route(server, "/ws", 11)
+        try http.static_files(server, "/static", arguments[1])
+    try http.start(server)
+    var application = Application(token = try http.worker_token(server), upload_directory = arguments[2], raw = raw)
+    let first = try thread.spawn(application_worker, (void*)&application)
+    let second = try thread.spawn(application_worker, (void*)&application)
+    print(f"READY {try http.port(server)}")
+    try first.join()
+    try second.join()
+    print("STOPPED")
+    return 0

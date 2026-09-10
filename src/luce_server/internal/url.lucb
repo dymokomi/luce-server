@@ -1,0 +1,130 @@
+## URL decoding and route segmentation have one interpretation throughout the
+## server. Filesystem traversal never receives an undecoded request target.
+import luce_server.internal.storage
+import strings
+import utf8
+
+func hex_digit(byte: u8) -> u8!:
+    if byte >= '0' and byte <= '9':
+        return byte - '0'
+    if byte >= 'a' and byte <= 'f':
+        return byte - 'a' + 10
+    if byte >= 'A' and byte <= 'F':
+        return byte - 'A' + 10
+    error(storage.invalid, "invalid URL escape")
+
+pub func decode(input: str, output: storage.Buffer*, path: bool = false) -> !:
+    output.clear()
+    var at: usize = 0
+    var validator: utf8.Decoder
+    while at < input.length:
+        var byte = input.bytes[at]
+        at += 1
+        if byte == '%':
+            if input.length - at < 2:
+                error(storage.invalid, "truncated URL escape")
+            byte = (try hex_digit(input.bytes[at])) * 16 + (try hex_digit(input.bytes[at + 1]))
+            at += 2
+            if path and (byte == '/' or byte == '\\'):
+                error(storage.invalid, "escaped path separators are not accepted")
+        elif byte == '+' and not path:
+            byte = ' '
+        if byte == 0 or byte < 32 or byte == 127 or (path and byte == '\\'):
+            error(storage.invalid, "URL contains a forbidden byte")
+        discard(try validator.push(byte))
+        let one: u8[1] = [byte]
+        try output.append(one)
+    try validator.finish()
+
+pub func request_path(target: str, output: storage.Buffer*) -> str!:
+    if target.length == 0 or target.bytes[0] != '/':
+        error(storage.invalid, "this origin server requires an origin-form target")
+    let end = strings.find(target, "?") else target.length
+    try decode((str)target.bytes[..<end], output, true)
+    let decoded = (str)output.view()
+    var cursor: usize = 1
+    while let part = segment(decoded, &cursor):
+        if part == "." or part == ".." or part.length == 0:
+            error(storage.invalid, "empty or relative path components are not accepted")
+    return decoded
+
+## cursor starts after the leading slash. A final slash has no extra segment.
+pub func segment(path: str, cursor: usize*) -> str?:
+    if *cursor >= path.length:
+        return none
+    let start = *cursor
+    while *cursor < path.length and path.bytes[*cursor] != '/':
+        *cursor += 1
+    let part = (str)path.bytes[start..<*cursor]
+    if *cursor < path.length:
+        *cursor += 1
+    return part
+
+pub func parameter(part: str) -> str?:
+    if part.length > 2 and part.bytes[0] == '{' and part.bytes[part.length - 1] == '}':
+        return (str)part.bytes[1..<part.length - 1]
+    return none
+
+pub func validate_pattern(pattern: str) -> !:
+    if pattern.length == 0 or pattern.bytes[0] != '/' or pattern.length > 4096:
+        error(storage.invalid, "a route pattern must start with a slash")
+    var cursor: usize = 1
+    var names: str[32]
+    var count: usize = 0
+    while let part = segment(pattern, &cursor):
+        if part.length == 0 or part == "." or part == "..":
+            error(storage.invalid, "invalid route component")
+        if let name = parameter(part):
+            if count == names.length:
+                error(storage.limit, "too many route parameters")
+            if name.bytes[0] == '*':
+                error(storage.invalid, "route parameters match one segment; use a static mount for subtrees")
+            for byte in name.bytes:
+                if not ((byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9') or byte == '_'):
+                    error(storage.invalid, "invalid route parameter name")
+            for prior in names[..<count]:
+                if prior == name:
+                    error(storage.invalid, "duplicate route parameter name")
+            names[count] = name
+            count += 1
+        elif strings.contains(part, "{") or strings.contains(part, "}") or strings.contains(part, "?") or strings.contains(part, "%") or strings.contains(part, "\\"):
+            error(storage.invalid, "invalid literal route component")
+
+pub func matches(pattern: str, path: str) -> bool:
+    if (pattern.bytes[pattern.length - 1] == '/') != (path.bytes[path.length - 1] == '/'):
+        return false
+    var wanted: usize = 1
+    var actual: usize = 1
+    while let part = segment(pattern, &wanted):
+        let value = segment(path, &actual) else return false
+        if parameter(part) == none and part != value:
+            return false
+    return segment(path, &actual) == none
+
+pub func capture(pattern: str, path: str, name: str) -> str?:
+    var wanted: usize = 1
+    var actual: usize = 1
+    while let part = segment(pattern, &wanted):
+        let value = segment(path, &actual) else return none
+        if parameter(part) == name:
+            return value
+    return none
+
+pub func query(target: str, name: str, output: storage.Buffer*) -> str?!:
+    let mark = strings.find(target, "?") else return none
+    var cursor = mark + 1
+    var key = storage.Buffer(maximum = 8192)
+    defer key.destroy()
+    while cursor < target.length:
+        let start = cursor
+        while cursor < target.length and target.bytes[cursor] != '&':
+            cursor += 1
+        let pair = (str)target.bytes[start..<cursor]
+        let equal = strings.find(pair, "=") else pair.length
+        try decode((str)pair.bytes[..<equal], &key)
+        if (str)key.view() == name:
+            let value = (str)pair.bytes[equal + 1..] if equal < pair.length else ""
+            try decode(value, output)
+            return (str)output.view()
+        cursor += 1
+    return none
