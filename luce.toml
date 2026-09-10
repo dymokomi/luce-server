@@ -1,0 +1,3 @@
+[package]
+name = "luce_server"
+source = "src"

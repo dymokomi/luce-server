@@ -1,0 +1,114 @@
+## Parse a complete bounded header block. Body framing is decided once here,
+## before a handler can observe the request or any body bytes are interpreted.
+from server.errors import bad_request, limit_exceeded, unsupported_protocol
+from server.headers import Headers
+from server.http.encoding import latin1
+from server.http.syntax import token, decimal, trim_ows, comma_tokens
+
+pub struct Limits:
+    pub let request_line: int = 8192
+    pub let header_bytes: int = 32768
+    pub let header_count: int = 100
+    pub let body_bytes: int = 1073741824
+
+pub enum Framing:
+    empty
+    fixed(length: int)
+    chunked
+
+pub struct RequestHead:
+    pub let method: str
+    pub let target: str
+    pub let version: str
+    pub let headers: Headers
+    pub let framing: Framing
+    pub let keep_alive: bool
+    pub let expect_continue: bool
+
+func validate_host(value: str) -> unit!:
+    if value == "" or value.contains(",") or value.contains("@") or value.contains("/") or value.contains("\\") or value.contains("?") or value.contains("#"):
+        error(bad_request, "invalid Host field")
+    for byte in value.bytes():
+        if byte <= 32 or byte >= 127:
+            error(bad_request, "invalid Host field")
+    if value.starts_with("["):
+        let end = value.index_of("]") else error(bad_request, "unclosed IP literal in Host")
+        if end <= 1:
+            error(bad_request, "empty IP literal in Host")
+        let suffix = value[end + 1..]
+        if suffix != "" and not suffix.starts_with(":"):
+            error(bad_request, "invalid port in Host")
+        if suffix.length > 1:
+            discard(try decimal(suffix[1..], 65535))
+    else:
+        let parts = value.split(":")
+        if parts.length > 2 or parts[0] == "" or value.contains("[") or value.contains("]"):
+            error(bad_request, "invalid authority in Host")
+        if parts.length == 2 and parts[1] != "":
+            discard(try decimal(parts[1], 65535))
+
+pub func parse(data: bytes, limits: Limits = Limits()) -> RequestHead!:
+    if data.length > limits.header_bytes:
+        error(limit_exceeded, "header block is too large")
+    let text = latin1(data)
+    if not text.ends_with("\r\n\r\n"):
+        error(bad_request, "incomplete header block")
+    let lines = text.split("\r\n")
+    if lines.length < 3 or lines[0].byte_count > limits.request_line:
+        error(limit_exceeded, "request line is too large")
+    let words = lines[0].split(" ")
+    if words.length != 3 or not token(words[0]) or words[1] == "":
+        error(bad_request, "invalid request line")
+    for byte in words[1].bytes():
+        if byte <= 32 or byte >= 127:
+            error(bad_request, "request target must contain visible ASCII bytes")
+    let version = words[2]
+    if version != "HTTP/1.1" and version != "HTTP/1.0":
+        error(unsupported_protocol, "unsupported HTTP version")
+    let headers = Headers()
+    for index in 1..<lines.length - 2:
+        let line = lines[index]
+        if line == "" or line.starts_with(" ") or line.starts_with("\t"):
+            error(bad_request, "empty or folded header line")
+        let colon = line.index_of(":") else error(bad_request, "header line needs a colon")
+        if headers.count() >= limits.header_count:
+            error(limit_exceeded, "too many header fields")
+        try headers.add(line[..<colon], trim_ows(line[colon + 1..]))
+    let hosts = headers.all("host")
+    if hosts.length > 1 or (version == "HTTP/1.1" and hosts.length != 1):
+        error(bad_request, "HTTP/1.1 requires exactly one Host field")
+    if hosts.length == 1:
+        try validate_host(hosts[0])
+    var length: int? = none
+    for value in headers.all("content-length"):
+        for part in value.split(","):
+            let parsed = try decimal(trim_ows(part), limits.body_bytes)
+            if let previous = length:
+                if previous != parsed:
+                    error(bad_request, "conflicting Content-Length values")
+            length = parsed
+    var framing = Framing.empty
+    if let fixed_length = length:
+        framing = Framing.fixed(length = fixed_length)
+    let transfer = headers.all("transfer-encoding")
+    if transfer.length > 0:
+        if length != none or version == "HTTP/1.0":
+            error(bad_request, "ambiguous or invalid request framing")
+        var codings: list[str] = []
+        for field in transfer:
+            codings = codings + (try comma_tokens(field))
+        if codings != ["chunked"]:
+            error(unsupported_protocol, "only chunked request transfer coding is supported")
+        framing = Framing.chunked
+    var connection: list[str] = []
+    for field in headers.all("connection"):
+        connection = connection + (try comma_tokens(field))
+    let keep_alive = not connection.contains("close") and (version == "HTTP/1.1" or connection.contains("keep-alive"))
+    var expect_continue = false
+    for field in headers.all("expect"):
+        if field.lower() != "100-continue" or version != "HTTP/1.1":
+            error(unsupported_protocol, "unsupported expectation")
+        expect_continue = true
+    return RequestHead(method = words[0], target = words[1], version = version,
+                       headers = headers, framing = framing, keep_alive = keep_alive,
+                       expect_continue = expect_continue)

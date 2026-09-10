@@ -1,0 +1,46 @@
+## Ordered, duplicate-preserving fields. Interpret list syntax only for fields
+## that define it; Set-Cookie and other non-list fields remain separate entries.
+from server.errors import bad_request
+from server.http.syntax import token
+
+pub struct Header:
+    pub let name: str
+    pub let value: str
+
+pub class Headers:
+    var fields: list[Header]
+
+    pub func init(self):
+        self.fields = []
+
+    pub func add(self, name: str, value: str) -> unit!:
+        if not token(name):
+            error(bad_request, "invalid header name")
+        for byte in value.bytes():
+            if (byte < 32 and byte != 9) or byte == 127:
+                error(bad_request, "invalid control byte in header value")
+        self.fields.append(Header(name = name.lower(), value = value))
+
+    pub func all(self, name: str) -> list[str]:
+        var result: list[str] = []
+        let normalized = name.lower()
+        for field in self.fields:
+            if field.name == normalized:
+                result.append(field.value)
+        return result
+
+    pub func get(self, name: str) -> str?:
+        let normalized = name.lower()
+        for field in self.fields:
+            if field.name == normalized:
+                return field.value
+        return none
+
+    pub func entries(self) -> list[Header]:
+        return self.fields.copy()
+
+    pub func contains(self, name: str) -> bool:
+        return self.get(name) != none
+
+    pub func count(self) -> int:
+        return self.fields.length

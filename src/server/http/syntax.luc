@@ -1,0 +1,61 @@
+## HTTP tokens and decimal framing use ASCII rules, independently of locale or
+## Unicode whitespace. Check bounds before arithmetic so malformed input fails.
+from server.errors import bad_request, limit_exceeded
+
+pub func token(text: str) -> bool:
+    if text.byte_count == 0:
+        return false
+    for byte in text.bytes():
+        if (byte >= 48 and byte <= 57) or (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122):
+            continue
+        if byte == 33 or byte == 35 or byte == 36 or byte == 37 or byte == 38 or byte == 39 or byte == 42 or byte == 43 or byte == 45 or byte == 46 or byte == 94 or byte == 95 or byte == 96 or byte == 124 or byte == 126:
+            continue
+        return false
+    return true
+
+pub func decimal(text: str, maximum: int = 9223372036854775807) -> int!:
+    if text.byte_count == 0 or maximum < 0:
+        error(bad_request, "an unsigned decimal value is required")
+    var result = 0
+    for byte in text.bytes():
+        if byte < 48 or byte > 57:
+            error(bad_request, "invalid decimal value")
+        let digit = byte - 48
+        if result > maximum // 10 or (result == maximum // 10 and digit > maximum % 10):
+            error(limit_exceeded, "decimal value exceeds its limit")
+        result = result * 10 + digit
+    return result
+
+pub func trim_ows(text: str) -> str:
+    let data = text.bytes()
+    var first = 0
+    var last = data.length
+    while first < last and (data[first] == 32 or data[first] == 9):
+        first += 1
+    while last > first and (data[last - 1] == 32 or data[last - 1] == 9):
+        last -= 1
+    # OWS is ASCII, so removing it leaves valid UTF-8 boundaries.
+    return data[first..<last].text() catch failure:
+        trap("OWS trimming broke a text boundary")
+
+pub func comma_tokens(text: str) -> list[str]!:
+    var result: list[str] = []
+    for part in text.split(","):
+        let value = trim_ows(part)
+        # RFC list syntax permits empty members; cap the whole header block elsewhere.
+        if value == "":
+            continue
+        if not token(value):
+            error(bad_request, "invalid token in a header list")
+        result.append(value.lower())
+    return result
+
+## Return the offset after CRLFCRLF. The caller remembers its previous scan offset
+## and starts at most three bytes earlier after appending another network fragment.
+pub func header_end(data: bytes, start: int = 0) -> int?:
+    var at = start if start >= 0 else 0
+    while at + 3 < data.length:
+        if data[at] == 13 and data[at + 1] == 10 and data[at + 2] == 13 and data[at + 3] == 10:
+            return at + 4
+        at += 1
+    return none
