@@ -1,0 +1,48 @@
+## A single-consumer byte source. File and memory implementations share this
+## boundary, so response framing never depends on how content is stored.
+from server.errors import invalid_configuration, limit_exceeded
+
+pub interface Content:
+    func length(self) -> int?
+    func read(self, maximum: int) -> bytes!
+    func close(self)
+
+pub class MemoryContent: Content:
+    let data: bytes
+    var offset: int = 0
+
+    pub func init(self, data: bytes):
+        self.data = data
+
+    pub func length(self) -> int?:
+        return self.data.length
+
+    pub func read(self, maximum: int) -> bytes!:
+        if maximum < 1:
+            error(invalid_configuration, "content read size must be positive")
+        let remaining = self.data.length - self.offset
+        let count = maximum if maximum < remaining else remaining
+        let result = self.data[self.offset..<self.offset + count]
+        self.offset += count
+        return result
+
+    pub func close(self):
+        self.offset = self.data.length
+
+## Materialize a bounded payload for text/JSON handlers. Streaming callers use
+## Content.read directly. The limit includes every byte, including the last read.
+pub func read_all(source: Content, maximum: int) -> bytes!:
+    if maximum < 0:
+        error(invalid_configuration, "body limit must be nonnegative")
+    if let length = source.length():
+        if length > maximum:
+            error(limit_exceeded, "request body exceeds the handler limit")
+    var result = b""
+    while true:
+        let chunk = try source.read(16384)
+        if chunk.length == 0:
+            break
+        if chunk.length > maximum - result.length:
+            error(limit_exceeded, "request body exceeds the handler limit")
+        result = result + chunk
+    return result

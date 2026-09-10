@@ -1,0 +1,25 @@
+## Conversions for declared request fields. No implicit trimming or lossy numeric
+## coercion: callers get a value of the requested type or a validation failure.
+from server.errors import validation_failed
+
+pub func integer(text: str, location: str, minimum: int = -9223372036854775808, maximum: int = 9223372036854775807) -> int!:
+    let data = text.bytes()
+    var at = 1 if text.starts_with("-") else 0
+    if at == data.length:
+        error(validation_failed, location + ": expected an integer")
+    while at < data.length:
+        if data[at] < 48 or data[at] > 57:
+            error(validation_failed, location + ": expected an integer")
+        at += 1
+    let value = int(text) catch failure:
+        error(validation_failed, location + ": integer is outside the supported range")
+    if value < minimum or value > maximum:
+        error(validation_failed, location + ": integer is outside the allowed range")
+    return value
+
+pub func boolean(text: str, location: str) -> bool!:
+    if text == "true":
+        return true
+    if text == "false":
+        return false
+    error(validation_failed, location + ": expected true or false")

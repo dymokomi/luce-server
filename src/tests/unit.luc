@@ -1,7 +1,9 @@
+import tests.routing as routing_tests
 import tests.http as http_tests
 import tests.json as json_tests
 
 pub func main(arguments: list[str]) -> int!:
     try http_tests.run()
     try json_tests.run()
+    try routing_tests.run()
     return 0

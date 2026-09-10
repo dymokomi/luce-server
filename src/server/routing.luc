@@ -1,0 +1,160 @@
+## Deterministic route matching. Literals precede typed parameters, untyped
+## parameters and final path captures. Registration order never breaks a tie.
+from server.request import Request
+from server.response import Response
+from server.content import MemoryContent
+from server.headers import Headers
+from server.errors import invalid_configuration, validation_failed, limit_exceeded, bad_request
+from server.http.syntax import token
+import server.response
+import server.validation
+
+struct Segment:
+    let kind: str
+    let value: str
+
+pub struct RouteInfo:
+    pub let method: str
+    pub let path: str
+    pub let summary: str
+
+class Route:
+    let method: str
+    let path: str
+    let summary: str
+    let handler: func(Request) -> Response!
+    let segments: list[Segment]
+    let canonical: str
+    let specificity: str
+
+    func init(self, method: str, path: str, handler: func(Request) -> Response!, summary: str) -> unit!:
+        if not token(method) or method != method.upper():
+            error(invalid_configuration, "route method must be an uppercase HTTP token")
+        if not path.starts_with("/") or path.contains("?") or path.contains("#") or path.byte_count > 4096:
+            error(invalid_configuration, "invalid route path")
+        var segments: list[Segment] = []
+        var names: set[str] = {}
+        var canonical: list[str] = []
+        var score = ""
+        let parts = path[1..].split("/")
+        if parts.length > 64:
+            error(invalid_configuration, "route path has too many segments")
+        for index in 0..<parts.length:
+            let part = parts[index]
+            if part.starts_with("{") and part.ends_with("}"):
+                let parameter = part[1..<part.length - 1].split(":")
+                if parameter.length > 2 or parameter[0] == "" or not token(parameter[0]):
+                    error(invalid_configuration, "invalid route parameter")
+                let name = parameter[0]
+                let kind = parameter[1] if parameter.length == 2 else "str"
+                if kind != "str" and kind != "int" and kind != "path":
+                    error(invalid_configuration, "route parameter type must be str, int or path")
+                if name in names:
+                    error(invalid_configuration, "route parameter names must be unique")
+                if kind == "path" and index != parts.length - 1:
+                    error(invalid_configuration, "a path capture must be the final segment")
+                names.insert(name)
+                segments.append(Segment(kind = kind, value = name))
+                canonical.append("{" + kind + "}")
+                score = score + ("2" if kind == "int" else ("1" if kind == "str" else "0"))
+            else:
+                if part.contains("{") or part.contains("}"):
+                    error(invalid_configuration, "a parameter occupies one complete route segment")
+                segments.append(Segment(kind = "literal", value = part))
+                canonical.append(part)
+                score = score + "3"
+        self.method = method
+        self.path = path
+        self.summary = summary
+        self.handler = handler
+        self.segments = segments
+        self.canonical = canonical.join("/")
+        self.specificity = score + "4"
+
+    func match_path(self, path: str) -> map[str, str]?:
+        if not path.starts_with("/"):
+            return none
+        let parts = path[1..].split("/")
+        var parameters: map[str, str] = {}
+        var index = 0
+        for segment in self.segments:
+            if segment.kind == "path":
+                parameters[segment.value] = parts[index..].join("/")
+                return parameters
+            if index >= parts.length:
+                return none
+            if segment.kind == "literal":
+                if parts[index] != segment.value:
+                    return none
+            else:
+                if parts[index] == "":
+                    return none
+                parameters[segment.value] = parts[index]
+            index += 1
+        return parameters if index == parts.length else none
+
+    func invoke(self, request: Request) -> Response!:
+        for segment in self.segments:
+            if segment.kind == "int":
+                let value = request.parameters[segment.value] else error(invalid_configuration, "matched parameter is missing")
+                discard(try validation.integer(value, "path." + segment.value))
+        return try self.handler(request)
+
+pub class Router:
+    var registered: list[Route]
+
+    pub func init(self):
+        self.registered = []
+
+    pub func add(self, method: str, path: str, handler: func(Request) -> Response!, summary: str = "") -> unit!:
+        let route = try Route(method, path, handler, summary)
+        for existing in self.registered:
+            if existing.method == route.method and existing.canonical == route.canonical:
+                error(invalid_configuration, "duplicate or ambiguous route registration")
+        self.registered.append(route)
+
+    pub func routes(self) -> list[RouteInfo]:
+        var result: list[RouteInfo] = []
+        for route in self.registered:
+            result.append(RouteInfo(method = route.method, path = route.path, summary = route.summary))
+        return result
+
+    pub func dispatch(self, request: Request) -> Response!:
+        var best = ""
+        for route in self.registered:
+            if route.match_path(request.path) != none and route.specificity > best:
+                best = route.specificity
+        if best == "":
+            return try response.problem(404, "not_found", "no route matches this path")
+        var allowed: list[str] = []
+        var selected: Route? = none
+        for route in self.registered:
+            if route.specificity != best:
+                continue
+            let parameters = route.match_path(request.path) else continue
+            if not allowed.contains(route.method):
+                allowed.append(route.method)
+            if route.method == request.method or (request.method == "HEAD" and route.method == "GET" and selected == none):
+                selected = route
+                request.parameters = parameters
+        if allowed.contains("GET") and not allowed.contains("HEAD"):
+            allowed.append("HEAD")
+        if not allowed.contains("OPTIONS"):
+            allowed.append("OPTIONS")
+        allowed.sort()
+        if let route = selected:
+            return route.invoke(request) catch failure:
+                if failure.code == validation_failed:
+                    return try response.problem(422, "validation", failure.message)
+                if failure.code == limit_exceeded:
+                    return try response.problem(413, "body_too_large", failure.message)
+                if failure.code == bad_request:
+                    return try response.problem(400, "bad_request", failure.message)
+                return try response.problem(500, "internal_error", "the request handler failed")
+        if request.method == "OPTIONS":
+            let headers = Headers()
+            try headers.add("allow", allowed.join(", "))
+            return try Response(204, MemoryContent(b""), headers)
+        let result = try response.problem(405, "method_not_allowed", "this route does not support the request method")
+        try result.headers.add("allow", allowed.join(", "))
+        return result

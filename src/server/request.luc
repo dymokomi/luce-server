@@ -1,0 +1,75 @@
+## Request metadata and a single-consumer body. Route parameters are assigned by
+## the router; repeated query values remain available without silently collapsing.
+from server.content import Content, read_all
+from server.headers import Headers
+from server.http.head import RequestHead
+from server.target import Parameter
+from server.json.value import Value
+from server.errors import validation_failed
+import server.target
+import server.validation
+import server.json.decode
+
+pub class Request:
+    pub let method: str
+    pub let path: str
+    pub let raw_target: str
+    pub let headers: Headers
+    pub let query: list[Parameter]
+    pub let content: Content
+    pub var parameters: map[str, str]
+
+    pub func init(self, head: RequestHead, content: Content) -> unit!:
+        let parsed = try target.parse(head.target, head.method)
+        self.method = head.method
+        self.path = parsed.path
+        self.raw_target = head.target
+        self.headers = head.headers
+        self.query = parsed.query
+        self.content = content
+        self.parameters = {}
+
+    pub func query_all(self, name: str) -> list[str]:
+        var values: list[str] = []
+        for parameter in self.query:
+            if parameter.name == name:
+                values.append(parameter.value)
+        return values
+
+    pub func query_text(self, name: str, default: str? = none) -> str!:
+        let values = self.query_all(name)
+        if values.length > 1:
+            error(validation_failed, "query." + name + ": expected one value")
+        if values.length == 1:
+            return values[0]
+        if let fallback = default:
+            return fallback
+        error(validation_failed, "query." + name + ": required field is missing")
+
+    pub func query_int(self, name: str, default: int? = none, minimum: int = -9223372036854775808, maximum: int = 9223372036854775807) -> int!:
+        let values = self.query_all(name)
+        if values.length == 0:
+            if let fallback = default:
+                return try validation.integer(str(fallback), "query." + name, minimum, maximum)
+        return try validation.integer(try self.query_text(name), "query." + name, minimum, maximum)
+
+    pub func query_bool(self, name: str, default: bool? = none) -> bool!:
+        if self.query_all(name).length == 0:
+            if let fallback = default:
+                return fallback
+        return try validation.boolean(try self.query_text(name), "query." + name)
+
+    pub func path_text(self, name: str) -> str!:
+        return self.parameters[name] else error(validation_failed, "path." + name + ": field is missing")
+
+    pub func path_int(self, name: str) -> int!:
+        return try validation.integer(try self.path_text(name), "path." + name)
+
+    pub func body(self, maximum: int = 1048576) -> bytes!:
+        return try read_all(self.content, maximum)
+
+    pub func json(self, maximum: int = 1048576) -> Value!:
+        let text = (try self.body(maximum)).text() catch failure:
+            error(validation_failed, "body: JSON must be UTF-8")
+        return decode.parse(text, max_bytes = maximum) catch failure:
+            error(validation_failed, "body: " + failure.message)
