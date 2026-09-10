@@ -73,7 +73,7 @@ pub func serve(connection: net.Connection*, state: model.State*, final_started: 
         request.path = try url.request_path(request.head.target, &request.path_buffer)
         let route = state.table.find(request.head.method, request.path)
         let mount = state.table.mount(request.path)
-        if route == none and mount == none:
+        if route == none and (mount == none or state.table.contains_path(request.path)):
             try automatic(request)
             var destination = try wire.stream(connection, state, state.config.response_timeout_ms)
             *final_started = true
@@ -106,6 +106,7 @@ pub func serve(connection: net.Connection*, state: model.State*, final_started: 
             let index = mount else trap("request lost its static mount")
             static_files.serve(request, &state.table.entries[index]) catch failure:
                 request.response_headers.clear()
+                request.response_field_count = 0
                 try responses.content(request, 500, "text/plain; charset=utf-8", "file unavailable\n".bytes)
         served += 1
         let keep = request.head.keep_alive and not request.close_after_response and not request.stop_after_response and not state.draining.load(.acquire) and served < state.config.requests_per_connection

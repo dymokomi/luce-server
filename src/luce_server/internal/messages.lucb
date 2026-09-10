@@ -2,6 +2,7 @@
 ## run here: only the application worker that takes a handle runs user code.
 import io
 import net
+import time
 import utf8
 import luce_server.internal.model
 import luce_server.internal.storage
@@ -54,15 +55,20 @@ func exchange_websocket(connection: net.Connection*, input: wire.Input*, opening
     var control = storage.Buffer(maximum = 125)
     defer control.destroy()
     var output: u8[16384]
+    var message_until: u64 = 0
     while not state.cancellation.is_requested():
         if state.draining.load(.acquire):
-            var destination = try wire.stream(connection, state, 1000)
-            try encoder.write(&destination, net.WebSocketOpcode.close, b"\x03\xe9")
+            try close_exchange(connection, input, &decoder, &encoder, 1001)
             return
-        var source = try wire.stream(connection, state, state.config.idle_timeout_ms)
+        if message_until != 0 and time.now() >= message_until:
+            error(net.timed_out, "WebSocket message deadline expired")
+        let deadline = net.Deadline.at(message_until) if message_until != 0 else try net.Deadline.after(state.config.idle_timeout_ms * 1000000)
+        var source = try net.DeadlineStream.over(connection, deadline, &state.cancellation)
         if input.available().length == 0 and not try input.fill(&source):
             try decoder.finish()
             return
+        if message_until == 0:
+            message_until = time.now() + state.config.request_timeout_ms * 1000000
         let step = try decoder.consume(input.available(), output)
         input.consume(step.consumed)
         if (u8)step.opcode >= 8:
@@ -76,6 +82,8 @@ func exchange_websocket(connection: net.Connection*, input: wire.Input*, opening
                 elif step.opcode == net.WebSocketOpcode.close:
                     try encoder.write(&destination, net.WebSocketOpcode.close, control.view())
                     return
+                if pending == none:
+                    message_until = 0
             continue
         if step.frame_start and step.opcode != net.WebSocketOpcode.continuation:
             pending = try message(opening, model.EventKind.websocket_text if step.opcode == net.WebSocketOpcode.text else model.EventKind.websocket_binary)
@@ -83,8 +91,7 @@ func exchange_websocket(connection: net.Connection*, input: wire.Input*, opening
             try request.payload.append(output[..<step.written], state.temporary_directory)
             if step.message_end:
                 if not model.submit(request):
-                    var destination = try wire.stream(connection, state, 1000)
-                    try encoder.write(&destination, net.WebSocketOpcode.close, b"\x03\xf3")
+                    try close_exchange(connection, input, &decoder, &encoder, 1011)
                     return
                 var destination = try wire.stream(connection, state, state.config.response_timeout_ms)
                 let opcode = net.WebSocketOpcode.text if request.kind == model.EventKind.websocket_text else net.WebSocketOpcode.binary
@@ -93,12 +100,32 @@ func exchange_websocket(connection: net.Connection*, input: wire.Input*, opening
                 let shutdown = request.stop_after_response
                 model.release_request(request)
                 pending = none
+                message_until = 0
                 discard(state.completed.add(1, .relaxed))
                 if shutdown:
                     model.begin_drain(state)
                 if close:
-                    try encoder.write(&destination, net.WebSocketOpcode.close, b"\x03\xe8")
+                    try close_exchange(connection, input, &decoder, &encoder, 1000)
                     return
+
+## A server-initiated close gives the peer one bounded opportunity to finish the
+## handshake. This short deadline also applies during graceful shutdown.
+func close_exchange(connection: net.Connection*, input: wire.Input*, decoder: net.WebSocketDecoder*, encoder: net.WebSocketEncoder*, code: u16) -> !:
+    var stream = try net.DeadlineStream.over(connection, try net.Deadline.after(1000000000))
+    let payload: u8[2] = [(u8)(code >> 8), (u8)code]
+    try encoder.write(&stream, net.WebSocketOpcode.close, payload)
+    var discarded: u8[16384]
+    while true:
+        if input.available().length == 0:
+            let filled = input.fill(&stream) catch:
+                return
+            if not filled:
+                return
+        let step = decoder.consume(input.available(), discarded) catch:
+            return
+        input.consume(step.consumed)
+        if step.opcode == net.WebSocketOpcode.close and step.frame_end:
+            return
 
 func discard_pending(pending: model.Pending*?*):
     if let remaining = *pending:

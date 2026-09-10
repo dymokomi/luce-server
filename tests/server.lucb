@@ -113,6 +113,7 @@ pub func main(arguments: str[]) -> i32!:
         try http.route(server, "GET", "/parallel", 10)
         try websocket.route(server, "/ws", 11)
         try http.static_files(server, "/static", arguments[1])
+        try http.static_files(server, "/", arguments[1])
     try http.shutdown_on_signals(server)
     try http.start(server)
     var application = Application(token = try http.worker_token(server), upload_directory = arguments[2], raw = raw)

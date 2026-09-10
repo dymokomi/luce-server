@@ -18,6 +18,15 @@ import luce_server.internal.storage
 import luce_server.internal.url
 import luce_server.internal.signals
 
+## Stable error identities for callers that translate failures to API replies.
+## File errors retain the standard library's identity through this boundary.
+pub let invalid_request: ErrorCode = storage.invalid
+pub let limit_exceeded: ErrorCode = storage.limit
+pub let request_closed: ErrorCode = storage.closed
+pub let invalid_state: ErrorCode = storage.conflict
+pub let file_missing: ErrorCode = files.missing
+pub let file_exists: ErrorCode = files.already_exists
+
 ## Use defaults() then change the fields needed by the application. All sizes
 ## are bytes and timeouts are milliseconds. A zero port requests an OS-assigned port.
 pub struct Options:

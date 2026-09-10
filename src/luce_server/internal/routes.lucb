@@ -72,6 +72,14 @@ pub struct Table:
                 break
         return none
 
+    ## An application owns its path for every method. A broad static mount must
+    ## not hide its automatic OPTIONS or method-not-allowed response.
+    pub func contains_path(path: str) -> bool:
+        for entry in self.entries[..<self.count]:
+            if entry.kind != Kind.static_files and url.matches(entry.pattern, path):
+                return true
+        return false
+
     pub func mount(path: str) -> usize?:
         var result: usize? = none
         var longest: usize = 0
