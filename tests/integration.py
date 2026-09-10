@@ -77,8 +77,8 @@ def read_frame(stream):
 
 
 class Server:
-    def __init__(self, binary, root, uploads, raw=False):
-        self.process = subprocess.Popen([str(binary), str(root), str(uploads), "raw" if raw else "http"],
+    def __init__(self, binary, root, uploads, raw=False, mode=None):
+        self.process = subprocess.Popen([str(binary), str(root), str(uploads), mode or ("raw" if raw else "http")],
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         ready, _, _ = select.select([self.process.stdout], [], [], 10)
         if not ready:
@@ -305,6 +305,18 @@ def signal_tests(binary, directory):
         server.cleanup()
 
 
+def lifetime_tests(binary, directory):
+    server = Server(binary, directory, directory, mode="lifetime")
+    try:
+        with server.connect() as peer:
+            peer.sendall(b"retained payload")
+            assert peer.recv(1) == b""
+        server.finish()
+        assert not list(directory.glob(".luce-*"))
+    finally:
+        server.cleanup()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
@@ -314,4 +326,5 @@ if __name__ == "__main__":
         http_tests(arguments.binary.resolve(), directory)
         tcp_tests(arguments.binary.resolve(), directory)
         signal_tests(arguments.binary.resolve(), directory)
+        lifetime_tests(arguments.binary.resolve(), directory)
     print("PASS independent HTTP, file, WebSocket, TCP, concurrency and shutdown checks")

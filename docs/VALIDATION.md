@@ -1,14 +1,36 @@
-# Implementation status
+# Validation
 
-The initial Base implementation passes local native checks on ARM64 macOS.
-`tests/unit.lucb` covers URL decoding and deterministic routing;
-`tests/integration.py` uses independent Python HTTP/WebSocket/TCP clients against
-`tests/server.lucb` and verifies routing, pipeline boundaries, chunked input,
-static mounts, byte ranges, upload/download streaming, temporary cleanup,
-concurrent application workers, handler abandonment/timeouts, and shutdown.
+The Base server passes native optimization levels 0–3 on ARM64 macOS and x86-64
+Linux. The implementation at `1833cf1` passed the
+[complete hosted server matrix](https://github.com/dymokomi/luce-server/actions/runs/34537471074).
+The package is `0.1.0-dev`; this is development evidence, not a production release
+or a claim that all server workloads are covered.
 
-The directory-relative file primitive is pinned in `bootstrap/BASE`.
-The complete local native optimization matrix (0–3) passes, including malformed
-WebSocket close codes and SIGTERM shutdown. The hosted Linux/macOS gate and
-downstream Luce application remain in progress. This is not yet a release
-verification record.
+The independent Python clients exercise the actual native executable:
+
+- Route precedence, decoded parameters/query values, HEAD, OPTIONS, 404/405.
+- Persistent/pipelined requests, chunked bodies/trailers, 100 Continue, malformed
+  framing, truncated input, body limits, and slow-request timeouts.
+- Static roots that survive renaming; refusal of symlinks/FIFOs; MIME types,
+  weak ETags, conditional responses and byte ranges.
+- Multi-MiB file upload/download equality, atomic overwrite refusal, and cleanup
+  of spooled and publication temporary files.
+- Concurrent application execution, 80 parallel HTTP clients, abandoned handlers,
+  late replies, bounded shutdown, and SIGTERM with an active connection.
+- Fragmented UTF-8 and binary WebSockets, interleaved ping/pong, malformed frames,
+  whole-message deadlines, Origin rejection, and both directions of close.
+- Raw TCP byte equality across arbitrary read chunk boundaries.
+
+The final lifetime regression additionally keeps a spooled request alive after
+closing its server and worker, verifies the body remains readable, rejects the
+revoked token and late reply, then verifies temporary cleanup. It passes locally
+at all four native optimization levels; the current hosted workflow runs it too.
+
+`tests/unit.lucb` covers URL validation, deterministic route selection, ranges,
+and locale-independent HTTP dates. `tests/server.lucb` exercises the public Base
+API; the separate
+[Luce application](https://github.com/dymokomi/luce-http-server) exercises ARC
+handles, mutable Base options, function-valued handlers and Luce task boundaries.
+Its own repository records end-to-end validation against pinned compiler/package
+commits. The Base standard library's protocol codec tests and compiler gates are
+additional layers; they do not replace these independent server tests.

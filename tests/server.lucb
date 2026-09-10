@@ -89,6 +89,8 @@ func application_worker(context: void*?):
 pub func main(arguments: str[]) -> i32!:
     if arguments.length != 4:
         return 2
+    if arguments[3] == "lifetime":
+        return try retained_request(arguments[2])
     var options = http.defaults()
     options.port = 0
     options.network_threads = 8
@@ -127,3 +129,49 @@ pub func main(arguments: str[]) -> i32!:
     try second.join()
     print("STOPPED")
     return 0
+
+## Public ownership contract: a retained request remains readable after its
+## worker and server close, but neither its old token nor a late reply is valid.
+func retained_request(directory: str) -> i32!:
+    var options = http.defaults()
+    options.port = 0
+    options.network_threads = 1
+    options.memory_body_limit = 4
+    options.temporary_directory = directory
+    let server = try socket.open(options)
+    var server_closed = false
+    defer close_server_if_owned(server, &server_closed)
+    try http.start(server)
+    let token = try http.worker_token(server)
+    let worker = try http.attach(token)
+    var worker_closed = false
+    defer close_worker_if_owned(worker, &worker_closed)
+    print(f"READY {try http.port(server)}")
+    let request = http.next(worker) else return 3
+    defer http.close_request(request)
+    http.close_server(server)
+    server_closed = true
+    http.close_worker(worker)
+    worker_closed = true
+    assert((try http.body_text(request, 1024)) == "retained payload")
+    var rejected = false
+    http.send_message(request, b"late") catch failure:
+        assert(failure.code == http.request_closed)
+        rejected = true
+    assert(rejected)
+    rejected = false
+    let stale = http.attach(token) catch failure:
+        assert(failure.code == http.request_closed)
+        rejected = true
+        recover (http.Worker)(void*)0
+    assert(rejected)
+    print("STOPPED")
+    return 0
+
+func close_server_if_owned(server: http.Server, closed: bool*):
+    if not *closed:
+        http.close_server(server)
+
+func close_worker_if_owned(worker: http.Worker, closed: bool*):
+    if not *closed:
+        http.close_worker(worker)

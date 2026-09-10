@@ -36,5 +36,5 @@ Protocol references: [HTTP semantics](https://www.rfc-editor.org/rfc/rfc9110.htm
 [HTTP/1.1](https://www.rfc-editor.org/rfc/rfc9112.html), and
 [WebSocket](https://www.rfc-editor.org/rfc/rfc6455.html).
 
-This document describes the intended delivery contract, not a claim that every
-item is already implemented. Implementation status belongs in VALIDATION.md.
+Implementation contracts and limits are documented in [API.md](API.md).
+Executed checks and their scope belong in [VALIDATION.md](VALIDATION.md).
