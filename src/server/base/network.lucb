@@ -5,10 +5,15 @@ import io
 import memory
 import net
 import time
+import sync
+import thread
 
 extern func getdtablesize() -> i32
 
 pub let invalid_argument: ErrorCode = ErrorCode.package(100)
+
+pub handle Run:
+    destroy close_run
 
 pub handle Loop:
     destroy close_loop
@@ -16,44 +21,133 @@ pub handle Loop:
 pub handle Connection:
     destroy close_connection
 
-struct LoopData:
+# One registered run owns the listening socket. The registry lock protects its
+# lifetime; the accept lock protects Listener operations. Worker pollers borrow
+# its immutable descriptor until every worker and the coordinator release it.
+struct RunData:
     var listener: net.Listener
+    var accepting: sync.Mutex
+    var stop: @u32
+    var ready_count: @u32
+    var references: usize
+    var identifier: i64
+    var workers: i64
+    var capacity: i64
+
+var registry_lock: sync.Mutex
+var registered: RunData*?
+var next_identifier: i64 = 1
+
+struct LoopData:
+    var run: RunData*
     var poller: net.Poller
     var accepting: bool
+    var announced: bool
 
 struct ConnectionData:
     var socket: net.Connection
     var input: u8[16384]
     var ended: bool
 
-pub func listen(host: str, bind_port: i64, capacity: i64) -> Loop!:
-    if bind_port < 0 or bind_port > 65535 or capacity < 1 or capacity > 65535:
-        error(invalid_argument, "invalid listener port or connection capacity")
-    # poll counts disabled slots too. Diagnose this at setup, before exposing a
-    # listener that would immediately fail under a small inherited descriptor limit.
-    if capacity >= (i64)getdtablesize():
-        error(invalid_argument, "connection capacity exceeds the process descriptor limit")
+## Only the coordinator opens a run. Identifiers are checked registry keys,
+## never pointer encodings. One active server per process is currently supported.
+pub func begin(host: str, bind_port: i64, capacity: i64, workers: i64) -> Run!:
+    if bind_port < 0 or bind_port > 65535 or capacity < 1 or capacity > 65535 or workers < 1 or workers > 32:
+        error(invalid_argument, "invalid listener port, connection capacity or worker count")
+    if capacity * workers + 32 >= (i64)getdtablesize():
+        error(invalid_argument, "worker connection capacity exceeds the process descriptor limit")
     let ip = net.IpAddress.parse(host) else error(invalid_argument, "bind address must be a numeric IPv4 or IPv6 address")
+    registry_lock.lock()
+    defer registry_lock.unlock()
+    if registered != none:
+        error(invalid_argument, "another server run is still active")
+    if next_identifier == 9223372036854775807:
+        error(invalid_argument, "server run identifiers are exhausted")
     with memory.heap:
         var listener = try net.Listener.bind(net.SocketAddress(ip = ip, port = (u16)bind_port))
         errdefer listener.destroy()
         try listener.set_nonblocking(true)
-        var poller = try net.Poller.create((usize)capacity + 1)
+        let data = try new RunData(listener = listener, references = 1, identifier = next_identifier, workers = workers, capacity = capacity)
+        next_identifier += 1
+        registered = data
+        return (Run)(void*)data
+
+pub func identifier(run: Run) -> i64:
+    return ((RunData*)(void*)run).identifier
+
+pub func port(run: Run) -> i64!:
+    return (i64)(try ((RunData*)(void*)run).listener.address()).port
+
+func retain_run(run_id: i64) -> RunData*!:
+    registry_lock.lock()
+    defer registry_lock.unlock()
+    let data = registered else error(invalid_argument, "server run is no longer active")
+    if data.identifier != run_id or data.stop.load(.acquire) != 0:
+        error(invalid_argument, "server run is stopped or does not exist")
+    data.references += 1
+    return data
+
+func release_run(data: RunData*):
+    registry_lock.lock()
+    defer registry_lock.unlock()
+    data.references -= 1
+    if data.references == 0:
+        registered = none
+        data.listener.destroy()
+        free(data) in memory.heap
+
+## Called on the Luce worker thread: no Luce object or ARC count is shared.
+pub func attach(run_id: i64) -> Loop!:
+    let run = try retain_run(run_id)
+    errdefer release_run(run)
+    with memory.heap:
+        var poller = try net.Poller.create((usize)run.capacity + 1)
         errdefer poller.destroy()
-        let descriptor = listener.descriptor() else error(invalid_argument, "listener has no descriptor")
+        let descriptor = run.listener.descriptor() else error(invalid_argument, "listener has no descriptor")
         try poller.watch(0, descriptor)
-        let data = try new LoopData(listener = listener, poller = poller, accepting = true)
+        let data = try new LoopData(run = run, poller = poller, accepting = true)
         return (Loop)(void*)data
 
-pub func port(loop: Loop) -> i64!:
+pub func mark_ready(loop: Loop):
     let data = (LoopData*)(void*)loop
-    return (i64)(try data.listener.address()).port
+    if not data.announced:
+        data.announced = true
+        discard(data.run.ready_count.add(1, .release))
+
+pub func all_ready(run: Run) -> bool:
+    let data = (RunData*)(void*)run
+    return data.ready_count.load(.acquire) == (u32)data.workers
+
+pub func stopped(loop: Loop) -> bool:
+    return ((LoopData*)(void*)loop).run.stop.load(.acquire) != 0
+
+pub func stop(run_id: i64):
+    registry_lock.lock()
+    defer registry_lock.unlock()
+    if let data = registered:
+        if data.identifier == run_id:
+            data.stop.store(1, .release)
+
+pub func run_stopped(run: Run) -> bool:
+    return ((RunData*)(void*)run).stop.load(.acquire) != 0
+
+pub func pause():
+    thread.sleep(10)
+
+pub func close_run(run: Run):
+    let data = (RunData*)(void*)run
+    data.stop.store(1, .release)
+    release_run(data)
 
 pub func accept(loop: Loop) -> Connection?!:
     let data = (LoopData*)(void*)loop
-    if not data.accepting:
+    if not data.accepting or data.run.stop.load(.acquire) != 0:
         return none
-    var socket = data.listener.accept(true) catch failure:
+    data.run.accepting.lock()
+    defer data.run.accepting.unlock()
+    if data.run.stop.load(.acquire) != 0:
+        return none
+    var socket = data.run.listener.accept(true) catch failure:
         if failure.code == io.would_block:
             return none
         error(failure.code, failure.message)
@@ -117,12 +211,12 @@ pub func stop_accepting(loop: Loop) -> !:
     if data.accepting:
         data.accepting = false
         try data.poller.disable(0)
-        try data.listener.close()
+        data.run.stop.store(1, .release)
 
 pub func watch_listener(loop: Loop, enabled: bool) -> !:
     let data = (LoopData*)(void*)loop
     if enabled and data.accepting:
-        let descriptor = data.listener.descriptor() else error(invalid_argument, "listener is closed")
+        let descriptor = data.run.listener.descriptor() else error(invalid_argument, "listener is closed")
         try data.poller.watch(0, descriptor)
     else:
         try data.poller.disable(0)
@@ -140,5 +234,5 @@ pub func close_loop(loop: Loop):
     with memory.heap:
         let data = (LoopData*)(void*)loop
         data.poller.destroy()
-        data.listener.destroy()
+        release_run(data.run)
         free(data)

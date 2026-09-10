@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Exercise the real HTTP transport; every fixture owns and reaps its server."""
 import argparse
+import concurrent.futures
+import socket
+import sys
 import http.client
 import re
 import selectors
@@ -30,16 +33,40 @@ def run(binary):
                 line = process.stdout.readline()
             match = re.search(rb':(\d+)\s*$', line)
             assert match, line
-            connection = http.client.HTTPConnection('127.0.0.1', int(match[1]), timeout=10)
+            port = int(match[1])
+            if sys.platform == 'darwin':
+                threads = subprocess.check_output(['ps', '-M', '-p', str(process.pid)], text=True).splitlines()[1:]
+            else:
+                threads = list(Path(f'/proc/{process.pid}/task').iterdir())
+            assert len(threads) >= 5, f'expected coordinator and four native workers: {threads}'
+            # More idle clients than one worker can hold. New requests must still
+            # progress through the other workers without waiting for idle expiry.
+            idle = [socket.create_connection(('127.0.0.1', port), timeout=10) for _ in range(40)]
+            def concurrent_request(index):
+                peer = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+                try:
+                    payload = bytes([index]) * 90000
+                    peer.request('POST', '/echo', payload)
+                    answer = peer.getresponse()
+                    assert answer.status == 200 and answer.read() == payload
+                finally:
+                    peer.close()
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+                    list(executor.map(concurrent_request, range(32)))
+            finally:
+                for peer in idle:
+                    peer.close()
+            connection = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
             def request(method, path, body=None, headers=None):
                 connection.request(method, path, body=body, headers=headers or {})
                 response = connection.getresponse()
                 return response.status, dict(response.getheaders()), response.read()
             assert request('GET', '/health')[0] == 200
             assert request('POST', '/echo', data)[2] == data
-            assert not list(upload.iterdir()), 'completed upload was not removed'
             status, headers, body = request('GET', '/static/data.bin')
             assert status == 200 and body == data
+            assert not list(upload.iterdir()), 'completed upload was not removed'
             assert request('HEAD', '/static/data.bin')[2] == b''
             assert request('GET', '/static/data.bin', headers={'Range': 'bytes=2-9'})[2] == data[2:10]
             assert request('GET', '/static/data.bin', headers={'If-None-Match': headers['etag']})[0] == 304

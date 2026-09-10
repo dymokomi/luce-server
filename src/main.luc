@@ -7,6 +7,8 @@ from server.request import Request
 from server.response import Response
 from server.json.value import Value
 import server.response
+import server.workers
+from server.workers import Coordinator
 
 func index(request: Request) -> Response!:
     return try response.text("luce-server\n")
@@ -28,6 +30,7 @@ pub func main(arguments: list[str]) -> int!:
     var host = "127.0.0.1"
     var port = 8000
     var root: str? = none
+    var worker_count = 4
     var temporary_directory = "/tmp"
     var at = 0
     while at < arguments.length:
@@ -35,14 +38,56 @@ pub func main(arguments: list[str]) -> int!:
             host = arguments[at + 1]
         elif arguments[at] == "--port" and at + 1 < arguments.length:
             port = try int(arguments[at + 1])
+        elif arguments[at] == "--workers" and at + 1 < arguments.length:
+            worker_count = try int(arguments[at + 1])
         elif arguments[at] == "--root" and at + 1 < arguments.length:
             root = arguments[at + 1]
         elif arguments[at] == "--temporary-directory" and at + 1 < arguments.length:
             temporary_directory = arguments[at + 1]
         else:
-            print("usage: luce-server [--host NUMERIC_ADDRESS] [--port PORT] [--root DIRECTORY] [--temporary-directory DIRECTORY]")
+            print("usage: luce-server [--host NUMERIC_ADDRESS] [--port PORT] [--workers COUNT] [--root DIRECTORY] [--temporary-directory DIRECTORY]")
             return 2
         at += 2
+    let configuration = Options(host = host, port = port, temporary_directory = temporary_directory, workers = worker_count)
+    let coordinator = try Coordinator(configuration)
+    let run = coordinator.identifier()
+    let work = spawn worker_group(configuration, root, run, configuration.workers)
+    discard(coordinator.ready() catch failure:
+        coordinator.stop()
+        discard(wait work catch cleanup_failure:
+            recover ())
+        coordinator.close()
+        error(failure.code, failure.message))
+    discard(wait work catch failure:
+        coordinator.close()
+        error(failure.code, failure.message))
+    coordinator.close()
+    return 0
+
+## Structured worker fan-out uses named Luce functions and copied configuration.
+## Every worker builds its own application; no route closure or ARC heap crosses.
+func worker_group(configuration: Options, root: str?, run: int, count: int) -> unit!:
+    if count > 1:
+        let child = spawn worker_group(configuration, root, run, count - 1)
+        discard(worker(configuration, root, run) catch failure:
+            workers.stop(run)
+            discard(wait child catch cleanup_failure:
+                recover ())
+            error(failure.code, failure.message))
+        try wait child
+    else:
+        try worker(configuration, root, run)
+
+func worker(configuration: Options, root: str?, run: int) -> unit!:
+    discard(run_application(configuration, root, run) catch failure:
+        workers.stop(run)
+        error(failure.code, failure.message))
+
+func run_application(configuration: Options, root: str?, run: int) -> unit!:
+    let app = try create(root)
+    try app.serve_worker(run, configuration)
+
+func create(root: str?) -> Application!:
     let app = Application()
     try app.get("/", index)
     try app.get("/health", health)
@@ -50,5 +95,4 @@ pub func main(arguments: list[str]) -> int!:
     try app.post("/echo", echo)
     if let directory = root:
         try app.mount("/static", directory)
-    try app.serve(Options(host = host, port = port, temporary_directory = temporary_directory))
-    return 0
+    return app

@@ -3,36 +3,27 @@
 from server.handler import Handler
 from server.options import Options
 from server.connection import Connection
-import server.options
 import server.base.network
 import server.base.system
 
-pub func serve(handler: Handler, configuration: Options) -> unit!:
-    try options.validate(configuration)
-    let loop = try network.listen(configuration.host, configuration.port, configuration.max_connections)
-    if configuration.signal_handlers:
-        try system.install_handlers()
+## The application and loop were both created on this worker. Cleanup completes
+## before its task ends, allowing Luce to verify the worker's ARC heap is empty.
+pub func serve(handler: Handler, configuration: Options, loop: network.Loop) -> unit!:
     var connections: map[int, Connection] = {}
-    if configuration.announce:
-        print(f"listening http://{configuration.host}:{try network.port(loop)}")
+    network.mark_ready(loop)
     discard(run_loop(loop, handler, configuration, connections) catch failure:
         for (slot, connection) in connections:
             discard(network.disable(loop, slot) catch cleanup_failure:
                 recover ())
             connection.close()
-        if configuration.signal_handlers:
-            system.restore_handlers()
         error(failure.code, failure.message))
-    if configuration.signal_handlers:
-        system.restore_handlers()
-    loop.close()
 
 func run_loop(loop: network.Loop, handler: Handler, configuration: Options, connections: map[int, Connection]) -> unit!:
     var draining = false
     var shutdown_at = 0
     while true:
         let now = network.now_milliseconds()
-        if configuration.signal_handlers and system.stopping() and not draining:
+        if (network.stopped(loop) or (configuration.signal_handlers and system.stopping())) and not draining:
             draining = true
             shutdown_at = now + configuration.shutdown_timeout_ms
             try network.stop_accepting(loop)

@@ -8,6 +8,7 @@ from server.options import Options
 from server.errors import invalid_configuration
 from server.static.mount import Mount
 import server.engine
+import server.base.network
 
 pub interface Middleware:
     func before(self, request: Request) -> Response?!
@@ -105,17 +106,21 @@ pub class Application: Handler:
         if let message = failed:
             error(invalid_configuration, "shutdown hook failed: " + message)
 
-    pub func serve(self, configuration: Options = Options()) -> unit!:
+    pub func serve_worker(self, run: int, configuration: Options) -> unit!:
         if self.running:
             error(invalid_configuration, "application is already running")
         self.running = true
-        discard(self.start(configuration) catch failure:
+        discard(self.start(run, configuration) catch failure:
             discard(self.finish() catch cleanup_failure:
                 recover ())
             error(failure.code, failure.message))
         try self.finish()
 
-    func start(self, configuration: Options) -> unit!:
+    func start(self, run: int, configuration: Options) -> unit!:
         for hook in self.startup:
             try hook()
-        try engine.serve(self, configuration)
+        let loop = try network.attach(run)
+        discard(engine.serve(self, configuration, loop) catch failure:
+            loop.close()
+            error(failure.code, failure.message))
+        loop.close()
