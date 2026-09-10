@@ -1,0 +1,54 @@
+name: Correctness
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    name: Native server (${{ matrix.host }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            host: arm64-macos
+          - runner: ubuntu-24.04
+            host: x86_64-linux
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: luce-server
+      - name: Read pinned Base revision
+        id: base
+        run: echo "revision=$(cat luce-server/bootstrap/BASE)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: dymokomi/luce-base
+          ref: ${{ steps.base.outputs.revision }}
+          path: luce-base
+      - name: Select Clang
+        run: |
+          mkdir -p "$RUNNER_TEMP/luce-bin"
+          ln -s "$(command -v clang)" "$RUNNER_TEMP/luce-bin/cc"
+          echo "$RUNNER_TEMP/luce-bin" >> "$GITHUB_PATH"
+      - name: Build Base natively
+        working-directory: luce-base
+        env:
+          CC: clang
+        run: ./build.sh
+      - name: Test all native optimization levels
+        working-directory: luce-server
+        run: |
+          mkdir -p build
+          set -o pipefail
+          ./test.sh --base ../luce-base/build/luce-base 2>&1 | tee build/gate.log
+      - name: Retain validation log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: luce-server-${{ matrix.host }}-${{ github.sha }}
+          path: luce-server/build/gate.log

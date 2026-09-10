@@ -63,7 +63,7 @@ func dispatch(request: http.Request, application: Application*) -> !:
         try http.text(request, 200, try format(buffer, f"{peak_handlers.load(.acquire)}"))
     elif identifier == 11:
         if http.is_websocket_open(request):
-            if http.header(request, "Origin") == "http://blocked.test":
+            if (try http.header(request, "Origin")) == "http://blocked.test":
                 try http.text(request, 403, "origin refused")
             else:
                 try websocket.accept(request, "")
@@ -113,6 +113,7 @@ pub func main(arguments: str[]) -> i32!:
         try http.route(server, "GET", "/parallel", 10)
         try websocket.route(server, "/ws", 11)
         try http.static_files(server, "/static", arguments[1])
+    try http.shutdown_on_signals(server)
     try http.start(server)
     var application = Application(token = try http.worker_token(server), upload_directory = arguments[2], raw = raw)
     let first = try thread.spawn(application_worker, (void*)&application)

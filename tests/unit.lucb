@@ -6,6 +6,7 @@ import luce_server.internal.wire
 import luce_server.internal.responses
 import luce_server.internal.static_files
 import luce_server.http
+import luce_server.internal.dates
 
 func test_paths() -> !:
     var buffer = storage.Buffer(maximum = 8192)
@@ -39,5 +40,8 @@ func test_routes() -> !:
 pub func main(arguments: str[]) -> i32!:
     try test_paths()
     try test_routes()
+    var stamp: u8[29]
+    assert((try dates.format_http(0, stamp)) == "Thu, 01 Jan 1970 00:00:00 GMT")
+    assert((try dates.format_http(951782400, stamp)) == "Tue, 29 Feb 2000 00:00:00 GMT")
     print("ok URL decoding and deterministic routing")
     return 0

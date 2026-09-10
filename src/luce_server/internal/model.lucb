@@ -10,6 +10,7 @@ import time
 import luce_server.internal.routes
 import luce_server.internal.storage
 import luce_server.internal.body
+import luce_server.internal.signals
 
 pub struct Config:
     pub var network_threads: usize = 8
@@ -34,6 +35,8 @@ pub struct State:
     pub var cancellation: net.Cancellation
     pub var draining: @bool
     pub var drain_until: u64
+    pub var watch_signals: bool
+    pub var signal_epoch: u64
     pub var lock: sync.Mutex
     pub var ready: sync.Condition
     pub var changed: sync.Condition
@@ -76,6 +79,7 @@ pub struct Pending:
     pub var response: storage.Buffer
     pub var response_type: storage.Buffer
     pub var response_headers: storage.Buffer
+    pub var response_field_count: usize
     pub var response_file: files.File
     pub var response_file_length: u64
     pub var response_status: u16 = 200
@@ -222,6 +226,8 @@ pub func clock_worker(context: void*?):
     let state = (State*)(context else return)
     while not state.cancellation.is_requested():
         thread.sleep(10)
+        if state.watch_signals and signals.epoch() != state.signal_epoch:
+            begin_drain(state)
         if state.draining.load(.acquire):
             if state.active.load(.acquire) == 0 or time.now() >= state.drain_until:
                 stop(state)

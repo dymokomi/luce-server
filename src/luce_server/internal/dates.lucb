@@ -1,0 +1,41 @@
+## IMF-fixdate formatting uses UTC arithmetic, independent of locale and shared
+## C-library calendar buffers. The server needs only years 1970 through 9999.
+import memory
+import luce_server.internal.storage
+
+func pair(output: u8[], at: usize, value: u64):
+    output[at] = '0' + (u8)(value // 10)
+    output[at + 1] = '0' + (u8)(value % 10)
+
+pub func format_http(timestamp: i64, output: u8[]) -> str!:
+    if timestamp < 0 or timestamp > 253402300799 or output.length < 29:
+        error(storage.invalid, "HTTP date is outside its supported range")
+    let seconds = (u64)timestamp
+    let total_days = seconds // 86400
+    var remaining = total_days
+    var year: u64 = 1970
+    while true:
+        let leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+        let days: u64 = 366 if leap else 365
+        if remaining < days:
+            break
+        remaining -= days
+        year += 1
+    let leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+    let months: u64[12] = [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    var month: usize = 0
+    while remaining >= months[month]:
+        remaining -= months[month]
+        month += 1
+    memory.copy(output, "Sun, 00 Jan 0000 00:00:00 GMT".bytes, 29)
+    let weekdays = "SunMonTueWedThuFriSat"
+    let month_names = "JanFebMarAprMayJunJulAugSepOctNovDec"
+    memory.copy(output, weekdays.bytes[(usize)((total_days + 4) % 7) * 3..], 3)
+    pair(output, 5, remaining + 1)
+    memory.copy(output[8..], month_names.bytes[month * 3..], 3)
+    pair(output, 12, year // 100)
+    pair(output, 14, year % 100)
+    pair(output, 17, (seconds % 86400) // 3600)
+    pair(output, 20, (seconds % 3600) // 60)
+    pair(output, 23, seconds % 60)
+    return (str)output[..<29]

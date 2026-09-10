@@ -8,5 +8,7 @@ static mounts, byte ranges, upload/download streaming, temporary cleanup,
 concurrent application workers, handler abandonment/timeouts, and shutdown.
 
 The directory-relative file primitive is pinned in `bootstrap/BASE`.
-The complete optimization matrix, hosted Linux/macOS gate, and downstream Luce
-application remain in progress. This is not yet a release verification record.
+The complete local native optimization matrix (0–3) passes, including malformed
+WebSocket close codes and SIGTERM shutdown. The hosted Linux/macOS gate and
+downstream Luce application remain in progress. This is not yet a release
+verification record.

@@ -2,6 +2,7 @@
 ## run here: only the application worker that takes a handle runs user code.
 import io
 import net
+import utf8
 import luce_server.internal.model
 import luce_server.internal.storage
 import luce_server.internal.wire
@@ -19,6 +20,32 @@ func message(opening: model.Pending*, kind: model.EventKind) -> model.Pending*!:
     return request
 
 pub func websocket(connection: net.Connection*, input: wire.Input*, opening: model.Pending*) -> !:
+    exchange_websocket(connection, input, opening) catch failure:
+        # Once upgraded, report failure as a WebSocket close, never HTTP. A
+        # fresh short deadline permits a bounded close even during cancellation.
+        var code: u16 = 1011
+        if failure.code == net.websocket_invalid:
+            code = 1002
+        elif failure.code == utf8.invalid_sequence or failure.code == utf8.incomplete_sequence:
+            code = 1007
+        elif failure.code == net.websocket_limit or failure.code == storage.limit:
+            code = 1009
+        elif failure.code == net.cancelled or failure.code == net.timed_out:
+            code = 1001
+        close_error(connection, code)
+        error(failure.code, failure.message)
+
+func close_error(connection: net.Connection*, code: u16):
+    let deadline = net.Deadline.after(1000000000) catch:
+        return
+    var destination = net.DeadlineStream.over(connection, deadline) catch:
+        return
+    var encoder = net.WebSocketEncoder.create(false)
+    let payload: u8[2] = [(u8)(code >> 8), (u8)code]
+    encoder.write(&destination, net.WebSocketOpcode.close, payload) catch:
+        return
+
+func exchange_websocket(connection: net.Connection*, input: wire.Input*, opening: model.Pending*) -> !:
     let state = opening.owner
     var decoder = net.WebSocketDecoder.create(true, (u64)state.config.body_limit, (u64)state.config.body_limit)
     var encoder = net.WebSocketEncoder.create(false, (u64)state.config.response_limit, (u64)state.config.response_limit)

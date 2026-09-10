@@ -4,6 +4,7 @@ import argparse
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import email.utils
 import http.client
 import os
 from pathlib import Path
@@ -153,12 +154,14 @@ def http_tests(binary, directory):
         status, headers, body = server.request("GET", "/static/data.txt")
         assert status == 200 and body == b"0123456789"
         assert headers["Content-Type"].startswith("text/plain")
+        assert abs(email.utils.parsedate_to_datetime(headers["Date"]).timestamp() - time.time()) < 10
         assert server.request("HEAD", "/static/data.txt")[2] == b""
         assert server.request("GET", "/static/data.txt", headers={"If-None-Match": headers["ETag"]})[0] == 304
         assert server.request("GET", "/static/data.txt", headers={"Range": "bytes=2-5"})[2] == b"2345"
         assert server.request("GET", "/static/data.txt", headers={"Range": "bytes=-3"})[2] == b"789"
         assert server.request("GET", "/static/data.txt", headers={"Range": "bytes=99-"})[0] == 416
         assert server.request("GET", "/static/data.txt", headers={"Range": "bytes=2-5", "If-Range": '"different"'})[0] == 200
+        assert server.request("GET", "/static/data.txt", headers={"If-Match": headers["ETag"]})[0] == 412
         moved = directory / "moved-public"
         root.rename(moved)
         assert server.request("GET", "/static/nested/file.txt")[2] == b"nested"
@@ -171,6 +174,15 @@ def http_tests(binary, directory):
             assert response(stream, head=True)[1][b"content-length"] == b"11"
             assert response(stream)[2] == b"42"
             assert stream.read() == b""
+        for wire, close_code in (
+                (frame(1, b"unmasked", masked=False), 1002),
+                (frame(1, b"\xff"), 1007),
+                (b"\x89\xfe\x00\x7e", 1002)):
+            peer, stream = server.websocket()
+            with peer, stream:
+                peer.sendall(wire)
+                opcode, payload = read_frame(stream)
+                assert opcode == 8 and struct.unpack("!H", payload[:2])[0] == close_code
 
         with server.connect() as peer, peer.makefile("rb") as stream:
             peer.sendall(b"POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n")
@@ -260,6 +272,21 @@ def tcp_tests(binary, directory):
         server.cleanup()
 
 
+def signal_tests(binary, directory):
+    server = Server(binary, directory, directory, raw=True)
+    try:
+        peer = server.connect()
+        try:
+            peer.sendall(b"hello")
+            assert peer.recv(5) == b"hello"
+            server.process.terminate()
+            server.finish()
+        finally:
+            peer.close()
+    finally:
+        server.cleanup()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
@@ -268,4 +295,5 @@ if __name__ == "__main__":
         directory = Path(temporary)
         http_tests(arguments.binary.resolve(), directory)
         tcp_tests(arguments.binary.resolve(), directory)
+        signal_tests(arguments.binary.resolve(), directory)
     print("PASS independent HTTP, file, WebSocket, TCP, concurrency and shutdown checks")

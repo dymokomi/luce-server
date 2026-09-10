@@ -16,6 +16,7 @@ import luce_server.internal.responses
 import luce_server.internal.static_files as assets
 import luce_server.internal.storage
 import luce_server.internal.url
+import luce_server.internal.signals
 
 ## Use defaults() then change the fields needed by the application. All sizes
 ## are bytes and timeouts are milliseconds. A zero port requests an OS-assigned port.
@@ -128,6 +129,14 @@ pub func static_files(server: Server, prefix: str, directory: str) -> !:
 pub func start(server: Server) -> !:
     try pool.start(try configuring(server))
 
+## Opt in before start. SIGINT/SIGTERM begin a bounded graceful drain. Signal
+## handlers are process-wide and restored after the last subscribing server closes.
+pub func shutdown_on_signals(server: Server) -> !:
+    let state = try configuring(server)
+    if not state.watch_signals:
+        state.signal_epoch = try signals.subscribe()
+        state.watch_signals = true
+
 pub func port(server: Server) -> i64!:
     return (i64)(try ((model.State*)(void*)server).listener.address()).port
 
@@ -157,8 +166,19 @@ pub func method(request: Request) -> str:
 pub func path(request: Request) -> str:
     return ((model.Pending*)(void*)request).path
 
-pub func header(request: Request, name: str) -> str?:
-    return ((model.Pending*)(void*)request).head.field(name)
+## Text access validates UTF-8 before crossing into Luce. Raw HTTP field values
+## can contain other bytes; use header_bytes when interpreting such a field.
+pub func header(request: Request, name: str) -> str?!:
+    let value = ((model.Pending*)(void*)request).head.field(name) else return none
+    var validator: utf8.Decoder
+    for byte in value.bytes:
+        discard(try validator.push(byte))
+    try validator.finish()
+    return value
+
+pub func header_bytes(request: Request, name: str) -> const u8[]?:
+    let value = ((model.Pending*)(void*)request).head.field(name) else return none
+    return value.bytes
 
 pub func parameter(request: Request, name: str) -> str?:
     let pending = (model.Pending*)(void*)request
@@ -305,4 +325,6 @@ pub func close_server(server: Server):
     let state = (model.State*)(void*)server
     model.unregister(state)
     model.join(state)
+    if state.watch_signals:
+        signals.unsubscribe()
     model.release(state)

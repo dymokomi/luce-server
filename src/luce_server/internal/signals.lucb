@@ -1,0 +1,48 @@
+## Opt-in process signal ownership. The handler only advances a lock-free atomic
+## counter; normal server clock threads perform the actual drain and cleanup.
+## Restore previous handlers when the last subscribing server closes.
+import sync
+import luce_server.internal.storage
+
+type Handler = func(i32) -> unit
+extern func set_handler as "signal"(number: i32, handler: Handler?) -> Handler?
+
+var lock: sync.Mutex
+var subscribers: usize
+var previous_interrupt: Handler?
+var previous_terminate: Handler?
+var generation: @u64
+
+func received(number: i32):
+    discard(generation.add(1, .relaxed))
+
+func refused(handler: Handler?) -> bool:
+    if let function = handler:
+        return (usize)(void*)function == 18446744073709551615
+    return false
+
+pub func subscribe() -> u64!:
+    lock.lock()
+    defer lock.unlock()
+    if subscribers == 0:
+        previous_interrupt = set_handler(2, received)
+        if refused(previous_interrupt):
+            error(storage.invalid, "SIGINT handler could not be installed")
+        previous_terminate = set_handler(15, received)
+        if refused(previous_terminate):
+            discard(set_handler(2, previous_interrupt))
+            error(storage.invalid, "SIGTERM handler could not be installed")
+    subscribers += 1
+    return generation.load(.acquire)
+
+pub func epoch() -> u64:
+    return generation.load(.acquire)
+
+pub func unsubscribe():
+    lock.lock()
+    defer lock.unlock()
+    assert(subscribers > 0)
+    subscribers -= 1
+    if subscribers == 0:
+        discard(set_handler(2, previous_interrupt))
+        discard(set_handler(15, previous_terminate))

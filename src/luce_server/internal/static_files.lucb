@@ -85,6 +85,7 @@ pub func byte_range(value: str, length: u64) -> (u64, u64)?:
     return (start, (end if end < length else length - 1) - start + 1)
 
 func matches_tag(value: str, tag: str) -> bool:
+    let expected = (str)tag.bytes[2..] if strings.starts_with(tag, "W/") else tag
     var at: usize = 0
     while at < value.length:
         let start = at
@@ -93,7 +94,7 @@ func matches_tag(value: str, tag: str) -> bool:
         var part = strings.trim((str)value.bytes[start..<at])
         if strings.starts_with(part, "W/"):
             part = (str)part.bytes[2..]
-        if part == "*" or part == tag:
+        if part == "*" or part == expected:
             return true
         at += 1
     return false
@@ -125,10 +126,17 @@ pub func serve(request: model.Pending*, mount: routes.Route*) -> !:
         error(storage.invalid, "the static file has an invalid size")
     let length = (u64)info.size
     var tag_buffer: u8[160]
-    let tag = try format(tag_buffer, f"\"{info.device}-{info.inode}-{info.size}-{info.modified.seconds}-{info.modified.nanoseconds}\"")
+    let tag = try format(tag_buffer, f"W/\"{info.device}-{info.inode}-{info.size}-{info.modified.seconds}-{info.modified.nanoseconds}-{info.changed.seconds}-{info.changed.nanoseconds}\"")
     try responses.content(request, 200, media_type(filename), "".bytes)
     try responses.field(request, "ETag", tag)
     try responses.field(request, "Accept-Ranges", "bytes")
+    if let condition = request.head.field("If-Match"):
+        # Metadata validators are weak; only an existence precondition can
+        # succeed. Never treat a weak validator as byte-for-byte equivalence.
+        if strings.trim(condition) != "*":
+            request.response_status = 412
+            opened.destroy()
+            return
     if let condition = request.head.field("If-None-Match"):
         if matches_tag(condition, tag):
             request.response_status = 304
@@ -139,7 +147,7 @@ pub func serve(request: model.Pending*, mount: routes.Route*) -> !:
     if request.head.method == "GET":
         if let range = request.head.field("Range"):
             let if_range = request.head.field("If-Range")
-            if (if_range == none or if_range == tag) and strings.starts_with(range, "bytes=") and not strings.contains(range, ","):
+            if if_range == none and strings.starts_with(range, "bytes=") and not strings.contains(range, ","):
                 var range_buffer: u8[96]
                 if let selected = byte_range(range, length):
                     offset = selected.0
