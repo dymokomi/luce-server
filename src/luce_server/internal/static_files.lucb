@@ -4,10 +4,11 @@
 
 import c
 import files
-import luce_server.internal.model
+from luce_server.internal.model import Exchange
 import luce_server.internal.responses
-import luce_server.internal.routes
+from luce_server.internal.routes import Route
 import luce_server.internal.storage
+from luce_server.internal.storage import Buffer
 import luce_server.internal.url
 import paths
 import strings
@@ -100,12 +101,12 @@ func matches_tag(value: str, tag: str) -> bool:
         at += 1
     return false
 
-pub func serve(request: model.Exchange*, mount: routes.Route*) -> !:
+pub func serve(request: Exchange*, mount: Route*) -> !:
     if request.http().head.method != "GET" and request.http().head.method != "HEAD":
         try responses.content(request, 405, "text/plain; charset=utf-8", "method not allowed\n".bytes)
         try responses.field(request, "Allow", "GET, HEAD")
         return
-    var relative = storage.Buffer(maximum = 8192)
+    var relative = Buffer(maximum = 8192)
     defer relative.destroy()
     var start = mount.pattern.length
     if mount.pattern == "/":

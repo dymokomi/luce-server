@@ -3,21 +3,24 @@
 
 import interop
 import luce_server.internal.application_pool
+from luce_server.internal.application_pool import Application
 import luce_server.internal.dispatch_queue
-import luce_server.internal.model
+from luce_server.internal.model import Exchange, WorkKind
 import luce_server.internal.responses
-import luce_server.internal.routes
+from luce_server.internal.routes import Kind, Table
 import luce_server.internal.storage
 import luce_server.request
 import luce_server.response
 import luce_server.route
+from luce_server.route import Route
 import luce_server.sessions.tcp_session as socket_api
 import luce_server.static_root
+from luce_server.static_root import StaticRoot
 import luce_server.sessions.websocket_session as websocket_api
 import ownership
 
 struct RouterState:
-    var table: routes.Table
+    var table: Table
     var handlers: (route.Handler?)[128]
     var websocket_handlers: (websocket_api.Handler?)[128]
     var socket_handler: socket_api.Handler?
@@ -53,19 +56,19 @@ struct RouterState:
         if let callback = self.socket_handler:
             callback.trace(visit, context)
 
-    mutating func dispatch(pending: model.Exchange*) -> !:
+    mutating func dispatch(pending: Exchange*) -> !:
         let scope = try request.open(pending)
         defer scope.release()
         defer scope.close()
         let lease = try scope.lease()
         defer lease.release()
         defer lease.invalidate()
-        if pending.kind == model.WorkKind.websocket:
+        if pending.kind == WorkKind.websocket:
             let callback = self.websocket_handlers[pending.http().route_index] else error(storage.conflict, "WebSocket route has no handler")
             try websocket_api.dispatch(pending, callback, lease)
             self.complete_session(pending)
             return
-        if pending.kind == model.WorkKind.tcp:
+        if pending.kind == WorkKind.tcp:
             let callback = self.socket_handler else error(storage.conflict, "TCP server has no session handler")
             try socket_api.dispatch(pending, callback, lease)
             self.complete_session(pending)
@@ -87,7 +90,7 @@ struct RouterState:
         pending.done = true
         state.dispatch.changed.broadcast()
 
-    func complete_session(pending: model.Exchange*):
+    func complete_session(pending: Exchange*):
         let state = pending.owner
         state.dispatch.lock.lock()
         pending.done = true
@@ -125,7 +128,7 @@ pub struct Router:
     pub func init() -> !:
         self.state = try interop.Reference[RouterState].adopt(try new RouterState(), state_type)
 
-    pub func add(value: interop.Reference[route.Route]) -> !:
+    pub func add(value: interop.Reference[Route]) -> !:
         let callback = try route.get_handler(value)
         defer callback.release()
         try (try self.owner()).value().add(try route.get_method(value), try route.get_pattern(value), callback)
@@ -143,7 +146,7 @@ pub struct Router:
         let state = (try self.owner()).value()
         if state.frozen or state.socket_handler != none:
             error(storage.conflict, "router cannot accept WebSocket routes")
-        let slot = try state.table.add("GET", pattern, routes.Kind.websocket)
+        let slot = try state.table.add("GET", pattern, Kind.websocket)
         state.websocket_handlers[slot] = handler.clone()
 
     pub func socket(handler: socket_api.Handler) -> !:
@@ -152,18 +155,18 @@ pub struct Router:
             error(storage.conflict, "TCP router accepts exactly one session handler")
         state.socket_handler = handler.clone()
 
-    pub func mount(prefix: str, root: interop.Reference[static_root.StaticRoot]) -> !:
+    pub func mount(prefix: str, root: interop.Reference[StaticRoot]) -> !:
         let state = (try self.owner()).value()
         if state.frozen:
             error(storage.conflict, "router is frozen after publishing its application")
         var directory = try static_root.duplicate(root)
         errdefer directory.destroy()
-        let index = try state.table.add("GET", prefix, routes.Kind.static_files)
+        let index = try state.table.add("GET", prefix, Kind.static_files)
         state.table.entries[index].root = directory
 
     ## Called once by the named factory. The returned callback retains this
     ## router's state and runs on that factory's application worker.
-    pub func application() -> application_pool.Application!:
+    pub func application() -> Application!:
         let native = (try self.owner()).value()
         if native.frozen:
             error(storage.conflict, "router was already published")
@@ -172,7 +175,7 @@ pub struct Router:
         if application_pool.first():
             server.config.raw_socket = native.socket_handler != none
             server.table = native.table
-            native.table = routes.Table()
+            native.table = Table()
         else:
             if (native.socket_handler != none) != server.config.raw_socket or native.table.count != server.table.count:
                 error(storage.conflict, "application workers declared different routes")
@@ -181,14 +184,14 @@ pub struct Router:
                 let expected = server.table.entries[index]
                 if actual.method != expected.method or actual.pattern != expected.pattern or actual.kind != expected.kind:
                     error(storage.conflict, "application workers declared different routes")
-                if actual.kind == routes.Kind.static_files:
+                if actual.kind == Kind.static_files:
                     let first = try expected.root.metadata()
                     let next = try actual.root.metadata()
                     if first.device != next.device or first.inode != next.inode:
                         error(storage.conflict, "application workers declared different static roots")
             native.table.destroy()
         native.frozen = true
-        return try application_pool.Application.bind_mutating(try self.owner(), RouterState.run)
+        return try Application.bind_mutating(try self.owner(), RouterState.run)
 
     func owner() -> interop.Reference[RouterState]!:
         return self.state else error(storage.closed, "router is closed")

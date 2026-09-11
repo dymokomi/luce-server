@@ -3,7 +3,8 @@
 
 import interop
 import luce_server.body
-import luce_server.internal.model
+from luce_server.body import Body
+from luce_server.internal.model import Exchange
 import luce_server.internal.request_state
 import luce_server.internal.storage
 import luce_server.internal.url
@@ -12,8 +13,8 @@ import strings
 import utf8
 
 pub struct Scope:
-    pub var pending: model.Exchange*
-    var body: interop.Reference[body.Body]?
+    pub var pending: Exchange*
+    var body: interop.Reference[Body]?
 
     pub mutating func close():
         if let retained_body = self.body:
@@ -67,7 +68,7 @@ pub struct Request:
         let value = try self.query(name) else return none
         return strings.parse_i64(value) else error(storage.invalid, "query parameter must be an integer")
 
-    pub func body() -> interop.Reference[body.Body]!:
+    pub func body() -> interop.Reference[Body]!:
         if let existing = self.scope.body:
             return existing.clone()
         let owned = try body.take(&self.scope.pending.http().payload)
@@ -79,7 +80,7 @@ pub let request_type: interop.ViewType[Request] = interop.ViewType[Request]("Req
 pub func view(scope: interop.Reference[Scope], lease: interop.Lease) -> interop.View[Request]!:
     return try interop.View[Request].make(Request(try scope.get()), request_type, lease)
 
-pub func open(pending: model.Exchange*) -> interop.Reference[Scope]!:
+pub func open(pending: Exchange*) -> interop.Reference[Scope]!:
     let native = try new Scope(pending, none)
     request_state.retain_request(pending)
     return try interop.Reference[Scope].adopt(native, scope_type)

@@ -3,7 +3,7 @@
 
 import io
 import luce_server.internal.dates
-import luce_server.internal.model
+from luce_server.internal.model import Exchange, State
 import luce_server.internal.storage
 import memory
 import net
@@ -48,10 +48,10 @@ pub struct Input:
                     error(io.unexpected_eof, "HTTP head ended prematurely")
                 return none
 
-pub func stream(connection: net.Connection*, state: model.State*, milliseconds: u64) -> net.DeadlineStream!:
+pub func stream(connection: net.Connection*, state: State*, milliseconds: u64) -> net.DeadlineStream!:
     return try net.DeadlineStream.over(connection, try net.Deadline.after(milliseconds * 1000000), &state.cancellation)
 
-pub func read_body(input: Input*, source: io.Reader, request: model.Exchange*) -> !:
+pub func read_body(input: Input*, source: io.Reader, request: Exchange*) -> !:
     var decoder = try net.HttpBodyDecoder.create(request.http().head.body_kind, request.http().head.body_length, (u64)request.owner.config.body_limit)
     while not decoder.finished():
         if input.available().length == 0 and not try input.fill(source):
@@ -63,7 +63,7 @@ pub func read_body(input: Input*, source: io.Reader, request: model.Exchange*) -
     try decoder.finish()
 
 ## The fallback is intentionally tiny and independent of response allocations.
-pub func fail(connection: net.Connection*, state: model.State*, status: u16):
+pub func fail(connection: net.Connection*, state: State*, status: u16):
     var destination = stream(connection, state, state.config.response_timeout_ms) catch:
         return
     var bytes: u8[256]

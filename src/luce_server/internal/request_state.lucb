@@ -1,35 +1,36 @@
 
-import luce_server.internal.body
+from luce_server.internal.body import Body
 import luce_server.internal.lifecycle
-import luce_server.internal.model
-import luce_server.internal.response_data
+from luce_server.internal.model import Exchange, RequestData, State
+from luce_server.internal.response_data import Data
 import luce_server.internal.storage
+from luce_server.internal.storage import Buffer
 import memory
 
-pub func make_request(state: model.State*, http: bool = true) -> model.Exchange*!:
+pub func make_request(state: State*, http: bool = true) -> Exchange*!:
     let before = state.counters.outstanding.add(1, .acq_rel)
     if before >= state.config.network_threads * 4:
         discard(state.counters.outstanding.sub(1, .acq_rel))
         error(storage.limit, "too many outstanding server exchanges")
     errdefer discard(state.counters.outstanding.sub(1, .acq_rel))
-    let exchange = try new model.Exchange(owner = state) in memory.heap
+    let exchange = try new Exchange(owner = state) in memory.heap
     errdefer free(exchange) in memory.heap
     if http:
-        exchange.request = try new model.RequestData(
-            wire = storage.Buffer(maximum = 32768),
-            path_buffer = storage.Buffer(maximum = 8192),
-            scratch = storage.Buffer(maximum = 8192),
-            loaded = storage.Buffer(maximum = state.config.response_limit),
-            payload = body.Body(bytes = storage.Buffer(maximum = state.config.memory_body_limit), maximum = state.config.body_limit),
-            reply = response_data.Data(bytes = storage.Buffer(maximum = state.config.response_limit))) in memory.heap
+        exchange.request = try new RequestData(
+            wire = Buffer(maximum = 32768),
+            path_buffer = Buffer(maximum = 8192),
+            scratch = Buffer(maximum = 8192),
+            loaded = Buffer(maximum = state.config.response_limit),
+            payload = Body(bytes = Buffer(maximum = state.config.memory_body_limit), maximum = state.config.body_limit),
+            reply = Data(bytes = Buffer(maximum = state.config.response_limit))) in memory.heap
     exchange.references.store(1, .relaxed)
     lifecycle.retain(state)
     return exchange
 
-pub func retain_request(request: model.Exchange*):
+pub func retain_request(request: Exchange*):
     discard(request.references.add(1, .relaxed))
 
-pub func release_request(request: model.Exchange*):
+pub func release_request(request: Exchange*):
     if request.references.sub(1, .acq_rel) != 1:
         return
     let state = request.owner

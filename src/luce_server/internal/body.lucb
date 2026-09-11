@@ -5,11 +5,12 @@ import c
 import files
 import io
 import luce_server.internal.storage
+from luce_server.internal.storage import Buffer
 import memory
 import paths
 
 pub struct Body:
-    pub var bytes: storage.Buffer
+    pub var bytes: Buffer
     pub var temporary: files.TemporaryFile
     pub var spilled: bool
     pub var length: usize
@@ -32,7 +33,7 @@ pub struct Body:
 
     ## Read the whole body only under the caller's explicit memory budget.
     ## A spooled body's position is rewound; the returned view belongs to output.
-    pub mutating func load(output: storage.Buffer*) -> const u8[]!:
+    pub mutating func load(output: Buffer*) -> const u8[]!:
         if self.length > output.maximum:
             error(storage.limit, "body is too large for an in-memory read")
         if not self.spilled:

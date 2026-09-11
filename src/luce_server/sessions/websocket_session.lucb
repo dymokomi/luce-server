@@ -6,11 +6,14 @@ import io
 import luce_server.body
 import luce_server.internal.body as body_storage
 import luce_server.internal.lifecycle
-import luce_server.internal.model
+from luce_server.internal.model import Exchange
 import luce_server.internal.responses
 import luce_server.internal.storage
+from luce_server.internal.storage import Buffer
 import luce_server.internal.wire
+from luce_server.internal.wire import Input
 import luce_server.response
+from luce_server.response import Response
 import net
 import ownership
 import time
@@ -66,7 +69,7 @@ pub struct Session:
         try io.write_all(&destination, head)
         state.accepted = true
 
-    pub func reject(reply: interop.Reference[response.Response]) -> !:
+    pub func reject(reply: interop.Reference[Response]) -> !:
         let state = self.state
         if state.accepted or state.closed:
             error(storage.closed, "WebSocket opening was already answered")
@@ -103,9 +106,9 @@ pub let session_type: interop.ViewType[Session] = interop.ViewType[Session]("Web
 pub type Handler = interop.Callback[interop.View[Session], unit]
 
 struct SessionState:
-    var pending: model.Exchange*
+    var pending: Exchange*
     var connection: net.Connection*
-    var input: wire.Input*
+    var input: Input*
     var decoder: net.WebSocketDecoder
     var encoder: net.WebSocketEncoder
     var accepted: bool
@@ -123,9 +126,9 @@ struct SessionState:
         if not self.accepted:
             error(storage.conflict, "accept the WebSocket before receiving messages")
         let server = self.pending.owner
-        var payload = body_storage.Body(bytes = storage.Buffer(maximum = server.config.memory_body_limit), maximum = server.config.body_limit)
+        var payload = body_storage.Body(bytes = Buffer(maximum = server.config.memory_body_limit), maximum = server.config.body_limit)
         defer payload.destroy()
-        var control = storage.Buffer(maximum = 125)
+        var control = Buffer(maximum = 125)
         defer control.destroy()
         var output: u8[16384]
         var message_until: u64 = 0
@@ -215,9 +218,9 @@ struct SessionState:
                 return
 
 ## Called only by the router while transport holds its connection/input alive.
-pub func dispatch(pending: model.Exchange*, handler: Handler, lease: interop.Lease) -> !:
+pub func dispatch(pending: Exchange*, handler: Handler, lease: interop.Lease) -> !:
     let connection = pending.session_connection else trap("WebSocket has no connection")
-    let input = (wire.Input*)(pending.session_input else trap("WebSocket has no input"))
+    let input = (Input*)(pending.session_input else trap("WebSocket has no input"))
     let server = pending.owner
     var state = SessionState(pending, connection, input,
         net.WebSocketDecoder.create(true, (u64)server.config.body_limit, (u64)server.config.body_limit),

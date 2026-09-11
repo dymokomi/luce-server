@@ -4,25 +4,26 @@
 import io
 import luce_server.internal.dispatch_queue
 import luce_server.internal.lifecycle
-import luce_server.internal.model
+from luce_server.internal.model import Exchange, State, WorkKind
 import luce_server.internal.request_state
 import luce_server.internal.responses
-import luce_server.internal.routes
+from luce_server.internal.routes import Kind
 import luce_server.internal.static_files
-import luce_server.internal.storage
+from luce_server.internal.storage import Buffer
 import luce_server.internal.url
 import luce_server.internal.wire
+from luce_server.internal.wire import Input
 import memory
 import net
 
-func allowed(request: model.Exchange*) -> bool!:
+func allowed(request: Exchange*) -> bool!:
     var methods: str[128]
     var count: usize = 0
-    var output = storage.Buffer(maximum = 4096)
+    var output = Buffer(maximum = 4096)
     defer output.destroy()
     var get = false
     for entry in request.owner.table.entries[..<request.owner.table.count]:
-        if entry.kind == routes.Kind.static_files or not url.matches(entry.pattern, request.http().path):
+        if entry.kind == Kind.static_files or not url.matches(entry.pattern, request.http().path):
             continue
         var present = false
         for previous in methods[..<count]:
@@ -51,15 +52,15 @@ func allowed(request: model.Exchange*) -> bool!:
     try responses.field(request, "Allow", (str)output.view())
     return true
 
-func automatic(request: model.Exchange*) -> !:
+func automatic(request: Exchange*) -> !:
     if try allowed(request):
         let status: i64 = 204 if request.http().head.method == "OPTIONS" else 405
         try responses.content(request, status, "text/plain; charset=utf-8", "".bytes)
     else:
         try responses.content(request, 404, "text/plain; charset=utf-8", "not found\n".bytes)
 
-pub func serve(connection: net.Connection*, state: model.State*, final_started: bool*) -> !:
-    let input = try new wire.Input() in memory.heap
+pub func serve(connection: net.Connection*, state: State*, final_started: bool*) -> !:
+    let input = try new Input() in memory.heap
     defer free(input) in memory.heap
     var served: usize = 0
     while not state.cancellation.is_requested() and not state.lifecycle.draining.load(.acquire) and served < state.config.requests_per_connection:
@@ -89,10 +90,10 @@ pub func serve(connection: net.Connection*, state: model.State*, final_started: 
         try wire.read_body(input, &source, request)
         if let index = route:
             request.http().route_index = index
-            if state.table.entries[index].kind == routes.Kind.websocket:
+            if state.table.entries[index].kind == Kind.websocket:
                 discard(try net.websocket_check_request(request.http().head))
-                request.kind = model.WorkKind.websocket
-            if request.kind == model.WorkKind.websocket:
+                request.kind = WorkKind.websocket
+            if request.kind == WorkKind.websocket:
                 request.session_connection = connection
                 request.session_input = (void*)input
                 # The session handler owns all subsequent wire output. submit

@@ -1,11 +1,11 @@
 
 ## A queue owns one reference, transferred to the application by take(). A
 ## timeout can remove a queued request without racing an application's claim.
-import luce_server.internal.model
+from luce_server.internal.model import Exchange, State
 import luce_server.internal.request_state
 import time
 
-pub func submit(request: model.Exchange*) -> bool:
+pub func submit(request: Exchange*) -> bool:
     let state = request.owner
     state.dispatch.lock.lock()
     defer state.dispatch.lock.unlock()
@@ -30,7 +30,7 @@ pub func submit(request: model.Exchange*) -> bool:
 
 ## Called with the state lock. Remove a timed-out entry immediately so absent
 ## application workers cannot accumulate temporary files or stale queue slots.
-func remove_queued(state: model.State*, request: model.Exchange*):
+func remove_queued(state: State*, request: Exchange*):
     for offset in 0..<state.dispatch.queue_count:
         let slot = (state.dispatch.queue_head + offset) % state.dispatch.queue.length
         if state.dispatch.queue[slot] != request:
@@ -44,7 +44,7 @@ func remove_queued(state: model.State*, request: model.Exchange*):
         request_state.release_request(request)
         return
 
-pub func take(state: model.State*) -> model.Exchange*?:
+pub func take(state: State*) -> Exchange*?:
     state.dispatch.lock.lock()
     defer state.dispatch.lock.unlock()
     while true:
@@ -62,7 +62,7 @@ pub func take(state: model.State*) -> model.Exchange*?:
             return none
         state.dispatch.ready.wait(&state.dispatch.lock)
 
-pub func abandon(request: model.Exchange*):
+pub func abandon(request: Exchange*):
     let state = request.owner
     state.dispatch.lock.lock()
     if not request.done:
@@ -73,7 +73,7 @@ pub func abandon(request: model.Exchange*):
     request_state.release_request(request)
 
 
-pub func drain(state: model.State*):
+pub func drain(state: State*):
     state.dispatch.lock.lock()
     while state.dispatch.queue_count > 0:
         let request = state.dispatch.queue[state.dispatch.queue_head] else trap("request queue lost an entry")

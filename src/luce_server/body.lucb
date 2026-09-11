@@ -5,12 +5,13 @@ import interop
 import io
 import luce_server.internal.body as storage_body
 import luce_server.internal.storage
+from luce_server.internal.storage import Buffer
 import strings
 import utf8
 
 pub struct Body:
     var payload: storage_body.Body
-    var loaded: storage.Buffer
+    var loaded: Buffer
     var position: usize
 
     pub func size() -> i64:
@@ -73,6 +74,6 @@ pub let body_type: interop.Type[Body] = interop.Type[Body]("Body", Body.close, c
 pub func take(payload: storage_body.Body*) -> interop.Reference[Body]!:
     var reservation = try interop.Reservation[Body](body_type)
     errdefer reservation.cancel()
-    let native = try new Body(*payload, storage.Buffer(), 0)
-    *payload = storage_body.Body(bytes = storage.Buffer())
+    let native = try new Body(*payload, Buffer(), 0)
+    *payload = storage_body.Body(bytes = Buffer())
     return reservation.publish(native)

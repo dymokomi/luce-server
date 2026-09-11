@@ -3,11 +3,11 @@
 import interop
 import luce_server.internal.storage
 import luce_server.internal.url
-import luce_server.request
-import luce_server.response
+from luce_server.request import Request
+from luce_server.response import Response
 import ownership
 
-pub type Handler = interop.Callback[interop.View[request.Request], interop.Reference[response.Response]]
+pub type Handler = interop.Callback[interop.View[Request], interop.Reference[Response]]
 
 pub struct Route:
     var method: str

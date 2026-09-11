@@ -3,13 +3,13 @@
 
 import io
 import luce_server.internal.dates
-import luce_server.internal.model
+from luce_server.internal.model import Exchange
 import luce_server.internal.response_data
 import luce_server.internal.storage
 import net
 import time
 
-pub func send(destination: io.Writer, request: model.Exchange*, keep_alive: bool) -> !:
+pub func send(destination: io.Writer, request: Exchange*, keep_alive: bool) -> !:
     var fields: net.HttpField[100]
     var date_buffer: u8[29]
     fields[0] = net.HttpField(name = "Date", value = try dates.format_http(time.unix(), date_buffer))
@@ -57,8 +57,8 @@ pub func send(destination: io.Writer, request: model.Exchange*, keep_alive: bool
         discard(try writer.write(request.http().reply.bytes.view()))
     try writer.finish()
 
-pub func field(request: model.Exchange*, name: str, value: str) -> !:
+pub func field(request: Exchange*, name: str, value: str) -> !:
     try response_data.field(&request.http().reply, name, value)
 
-pub func content(request: model.Exchange*, status: i64, content_type: str, data: const u8[]) -> !:
+pub func content(request: Exchange*, status: i64, content_type: str, data: const u8[]) -> !:
     try response_data.content(&request.http().reply, status, content_type, data)

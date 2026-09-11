@@ -5,14 +5,15 @@ import c
 import files
 import io
 import luce_server.internal.storage
+from luce_server.internal.storage import Buffer
 import net
 import paths
 import strings
 
 pub struct Data:
-    pub var bytes: storage.Buffer
-    pub var content_type: storage.Buffer = storage.Buffer(maximum = 256)
-    pub var headers: storage.Buffer = storage.Buffer(maximum = 8192)
+    pub var bytes: Buffer
+    pub var content_type: Buffer = Buffer(maximum = 256)
+    pub var headers: Buffer = Buffer(maximum = 8192)
     pub var field_count: usize
     pub var file: files.File
     pub var file_length: u64

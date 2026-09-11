@@ -1,10 +1,10 @@
 ## Neutral cross-thread layouts. Runtime owners and callbacks never live here.
 
 import interop
-import luce_server.internal.body
-import luce_server.internal.response_data
-import luce_server.internal.routes
-import luce_server.internal.storage
+from luce_server.internal.body import Body
+from luce_server.internal.response_data import Data
+from luce_server.internal.routes import Table
+from luce_server.internal.storage import Buffer
 import net
 import sync
 import thread
@@ -55,7 +55,7 @@ pub struct State:
     pub var references: @u64
     pub var config: Config
     pub var temporary_directory: str
-    pub var table: routes.Table
+    pub var table: Table
     pub var listener: net.Listener
     pub var cancellation: net.Cancellation
     pub var lifecycle: Lifecycle
@@ -84,13 +84,13 @@ pub struct Exchange:
         return self.request else trap("TCP exchange has no HTTP request")
 
 pub struct RequestData:
-    pub var wire: storage.Buffer
-    pub var path_buffer: storage.Buffer
-    pub var scratch: storage.Buffer
-    pub var loaded: storage.Buffer
+    pub var wire: Buffer
+    pub var path_buffer: Buffer
+    pub var scratch: Buffer
+    pub var loaded: Buffer
     pub var fields: net.HttpField[100]
     pub var head: net.HttpHead
     pub var path: str
     pub var route_index: usize
-    pub var payload: body.Body
-    pub var reply: response_data.Data
+    pub var payload: Body
+    pub var reply: Data

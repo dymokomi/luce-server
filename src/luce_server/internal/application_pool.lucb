@@ -2,17 +2,17 @@
 ## A managed factory is entered on its new runtime thread by interop.Worker.
 
 import interop
-import luce_server.internal.model
+from luce_server.internal.model import State
 import luce_server.internal.storage
 
 pub type Application = interop.Callback[unit, unit]
 pub type Factory = interop.WorkerEntry[str, unit, unit]
 
-local var active_server: model.State*? = none
+local var active_server: State*? = none
 local var first_application: bool = false
 local var registered_router: bool = false
 
-pub func server() -> model.State*!:
+pub func server() -> State*!:
     return active_server else error(storage.conflict, "routers run inside a server application factory")
 
 pub func first() -> bool:
@@ -24,7 +24,7 @@ pub func register_router() -> !:
     registered_router = true
 
 struct Bootstrap:
-    let state: model.State*
+    let state: State*
     let factory: Factory
     let first: bool
 
@@ -40,7 +40,7 @@ struct Bootstrap:
                 interop.Owned[str]("application factory did not publish a router"))
         return result
 
-pub func start(state: model.State*, factory: Factory, data: str, count: usize) -> !:
+pub func start(state: State*, factory: Factory, data: str, count: usize) -> !:
     for index in 0..<count:
         # init waits for open to return, so this stack context cannot escape.
         var context = Bootstrap(state, factory, index == 0)

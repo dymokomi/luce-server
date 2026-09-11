@@ -5,7 +5,7 @@ import io
 import luce_server.internal.dispatch_queue
 import luce_server.internal.http_connection
 import luce_server.internal.lifecycle
-import luce_server.internal.model
+from luce_server.internal.model import State, WorkKind
 import luce_server.internal.request_state
 import luce_server.internal.shutdown
 import luce_server.internal.wire
@@ -14,7 +14,7 @@ import net
 import thread
 
 func worker(context: void*?):
-    let state = (model.State*)(context else return)
+    let state = (State*)(context else return)
     while not state.cancellation.is_requested() and not state.lifecycle.draining.load(.acquire):
         let deadline = net.Deadline.after(100000000) catch:
             lifecycle.stop(state)
@@ -50,7 +50,7 @@ func worker(context: void*?):
                 discard(state.counters.failures.add(1, .relaxed))
                 continue
             defer request_state.release_request(pending)
-            pending.kind = model.WorkKind.tcp
+            pending.kind = WorkKind.tcp
             pending.session_connection = connection
             discard(dispatch_queue.submit(pending))
         else:
@@ -60,7 +60,7 @@ func worker(context: void*?):
                 if not final_started:
                     wire.fail(connection, state, wire.error_status(failure.code))
 
-pub func start(state: model.State*) -> !:
+pub func start(state: State*) -> !:
     errdefer shutdown.join(state)
     state.lifecycle.threads[0] = try thread.spawn(lifecycle.clock_worker, (void*)state, name = "luce-clock")
     state.lifecycle.thread_count = 1

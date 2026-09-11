@@ -2,6 +2,7 @@
 ## server. Filesystem traversal never receives an undecoded request target.
 
 import luce_server.internal.storage
+from luce_server.internal.storage import Buffer
 import strings
 import utf8
 
@@ -14,7 +15,7 @@ func hex_digit(byte: u8) -> u8!:
         return byte - 'A' + 10
     error(storage.invalid, "invalid URL escape")
 
-pub func decode(input: str, output: storage.Buffer*, path: bool = false) -> !:
+pub func decode(input: str, output: Buffer*, path: bool = false) -> !:
     output.clear()
     var at: usize = 0
     var validator: utf8.Decoder
@@ -37,7 +38,7 @@ pub func decode(input: str, output: storage.Buffer*, path: bool = false) -> !:
         try output.append(one)
     try validator.finish()
 
-pub func request_path(target: str, output: storage.Buffer*) -> str!:
+pub func request_path(target: str, output: Buffer*) -> str!:
     if target.length == 0 or target.bytes[0] != '/':
         error(storage.invalid, "this origin server requires an origin-form target")
     let end = strings.find(target, "?") else target.length
@@ -111,10 +112,10 @@ pub func capture(pattern: str, path: str, name: str) -> str?:
             return value
     return none
 
-pub func query(target: str, name: str, output: storage.Buffer*) -> str?!:
+pub func query(target: str, name: str, output: Buffer*) -> str?!:
     let mark = strings.find(target, "?") else return none
     var cursor = mark + 1
-    var key = storage.Buffer(maximum = 8192)
+    var key = Buffer(maximum = 8192)
     defer key.destroy()
     while cursor < target.length:
         let start = cursor

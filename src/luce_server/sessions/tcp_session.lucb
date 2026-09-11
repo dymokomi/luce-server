@@ -4,7 +4,7 @@
 import interop
 import io
 import luce_server.internal.lifecycle
-import luce_server.internal.model
+from luce_server.internal.model import Exchange
 import luce_server.internal.storage
 import luce_server.internal.wire
 import net
@@ -47,12 +47,12 @@ pub let session_type: interop.ViewType[Session] = interop.ViewType[Session]("TCP
 pub type Handler = interop.Callback[interop.View[Session], unit]
 
 struct SessionState:
-    var pending: model.Exchange*
+    var pending: Exchange*
     var connection: net.Connection*
     var closed: bool
     var input: u8[16384]
 
-pub func dispatch(pending: model.Exchange*, handler: Handler, lease: interop.Lease) -> !:
+pub func dispatch(pending: Exchange*, handler: Handler, lease: interop.Lease) -> !:
     var state = SessionState(pending = pending, connection = pending.session_connection else trap("TCP session has no connection"))
     let view = try interop.View[Session].make(Session(&state), session_type, lease)
     defer view.release()

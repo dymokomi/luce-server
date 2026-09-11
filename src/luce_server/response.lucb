@@ -4,15 +4,17 @@
 import interop
 import json
 import luce_server.internal.response_data
+from luce_server.internal.response_data import Data
 import luce_server.internal.static_files
 import luce_server.internal.storage
+from luce_server.internal.storage import Buffer
 
 pub struct Response:
-    var data: response_data.Data
+    var data: Data
     var committed: bool
 
     pub func init(text: str = "", status: i64 = 200) -> !:
-        self.data = response_data.Data(bytes = storage.Buffer())
+        self.data = Data(bytes = Buffer())
         self.committed = false
         errdefer self.data.close()
         try response_data.content(&self.data, status, "text/plain; charset=utf-8", text.bytes)
@@ -59,12 +61,12 @@ pub struct Response:
 pub let response_type: interop.Type[Response] = interop.Type[Response]("Response", Response.close, closeable = true)
 
 ## Internal commit entry: the public http module exports only the Response type.
-pub func transfer(source: interop.Reference[Response], maximum: usize) -> response_data.Data!:
+pub func transfer(source: interop.Reference[Response], maximum: usize) -> Data!:
     let native = try source.get()
     try native.editable()
     if native.data.bytes.used > maximum:
         error(storage.limit, "response exceeds the server byte limit")
     let result = native.data
-    native.data = response_data.Data(bytes = storage.Buffer())
+    native.data = Data(bytes = Buffer())
     native.committed = true
     return result

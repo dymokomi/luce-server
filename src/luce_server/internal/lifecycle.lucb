@@ -1,5 +1,5 @@
 
-import luce_server.internal.model
+from luce_server.internal.model import State
 import luce_server.internal.signals
 import luce_server.internal.storage
 import memory
@@ -7,10 +7,10 @@ import sync
 import thread
 import time
 
-pub func retain(state: model.State*):
+pub func retain(state: State*):
     discard(state.references.add(1, .relaxed))
 
-pub func release(state: model.State*):
+pub func release(state: State*):
     if state.references.sub(1, .acq_rel) != 1:
         return
     state.table.destroy()
@@ -18,14 +18,14 @@ pub func release(state: model.State*):
     storage.release(state.temporary_directory)
     free(state) in memory.heap
 
-pub func stop(state: model.State*):
+pub func stop(state: State*):
     state.cancellation.request()
     state.dispatch.lock.lock()
     state.dispatch.ready.broadcast()
     state.dispatch.changed.broadcast()
     state.dispatch.lock.unlock()
 
-pub func begin_drain(state: model.State*):
+pub func begin_drain(state: State*):
     state.dispatch.lock.lock()
     if not state.lifecycle.draining.load(.relaxed):
         state.lifecycle.drain_until = time.now() + state.config.shutdown_timeout_ms * 1000000
@@ -35,7 +35,7 @@ pub func begin_drain(state: model.State*):
 ## Timed response waits use a single shared clock thread because sync.Condition
 ## has no timed-wait operation. Idle application workers are not woken by ticks.
 pub func clock_worker(context: void*?):
-    let state = (model.State*)(context else return)
+    let state = (State*)(context else return)
     while not state.cancellation.is_requested():
         thread.sleep(10)
         if state.lifecycle.watch_signals and signals.epoch() != state.lifecycle.signal_epoch:

@@ -3,9 +3,9 @@
 ## dispatch before either pool is joined; application owners die on their worker.
 import luce_server.internal.dispatch_queue
 import luce_server.internal.lifecycle
-import luce_server.internal.model
+from luce_server.internal.model import State
 
-pub func join(state: model.State*):
+pub func join(state: State*):
     lifecycle.stop(state)
     state.lifecycle.join_lock.lock()
     defer state.lifecycle.join_lock.unlock()
