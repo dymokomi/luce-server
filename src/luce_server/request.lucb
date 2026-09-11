@@ -1,0 +1,85 @@
+## A request is a checked view into one handler invocation. Copied strings and
+## owned bodies may escape; retaining the view never extends its validity scope.
+
+import interop
+import luce_server.body
+import luce_server.internal.model
+import luce_server.internal.request_state
+import luce_server.internal.storage
+import luce_server.internal.url
+import ownership
+import strings
+import utf8
+
+pub struct Scope:
+    pub var pending: model.Exchange*
+    var body: interop.Reference[body.Body]?
+
+    pub mutating func close():
+        if let retained_body = self.body:
+            retained_body.release()
+        self.body = none
+        request_state.release_request(self.pending)
+
+    pub func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        if let retained_body = self.body:
+            retained_body.trace(visit, context)
+
+pub let scope_type: interop.Type[Scope] = interop.Type[Scope]("request scope", Scope.close, Scope.trace, closeable = true)
+
+pub struct Request:
+    var scope: Scope*
+
+    pub func method() -> str:
+        return self.scope.pending.http().head.method
+
+    pub func path() -> str:
+        return self.scope.pending.http().path
+
+    pub func header(name: str) -> str?!:
+        let value = self.scope.pending.http().head.field(name) else return none
+        var decoder: utf8.Decoder
+        for byte in value.bytes:
+            discard(try decoder.push(byte))
+        try decoder.finish()
+        return value
+
+    pub func header_bytes(name: str) -> const u8[]?:
+        let value = self.scope.pending.http().head.field(name) else return none
+        return value.bytes
+
+    pub func parameter(name: str) -> str?:
+        let pending = self.scope.pending
+        return url.capture(pending.owner.table.entries[pending.http().route_index].pattern, pending.http().path, name)
+
+    pub func integer_parameter(name: str) -> i64!:
+        let value = self.parameter(name) else error(storage.invalid, "required route parameter is missing")
+        return strings.parse_i64(value) else error(storage.invalid, "route parameter must be an integer")
+
+    pub func query(name: str) -> str?!:
+        let pending = self.scope.pending
+        return url.query(pending.http().head.target, name, &pending.http().scratch) catch failure:
+            if failure.code == utf8.invalid_sequence or failure.code == utf8.incomplete_sequence:
+                error(storage.invalid, "query text is not valid UTF-8")
+            error(failure.code, failure.message)
+
+    pub func integer_query(name: str) -> i64?!:
+        let value = try self.query(name) else return none
+        return strings.parse_i64(value) else error(storage.invalid, "query parameter must be an integer")
+
+    pub func body() -> interop.Reference[body.Body]!:
+        if let existing = self.scope.body:
+            return existing.clone()
+        let owned = try body.take(&self.scope.pending.http().payload)
+        self.scope.body = owned
+        return owned.clone()
+
+pub let request_type: interop.ViewType[Request] = interop.ViewType[Request]("Request")
+
+pub func view(scope: interop.Reference[Scope], lease: interop.Lease) -> interop.View[Request]!:
+    return try interop.View[Request].make(Request(try scope.get()), request_type, lease)
+
+pub func open(pending: model.Exchange*) -> interop.Reference[Scope]!:
+    let native = try new Scope(pending, none)
+    request_state.retain_request(pending)
+    return try interop.Reference[Scope].adopt(native, scope_type)

@@ -1,0 +1,27 @@
+
+## The server owner serializes lifecycle calls. Cancellation wakes transport and
+## dispatch before either pool is joined; application owners die on their worker.
+import luce_server.internal.dispatch_queue
+import luce_server.internal.lifecycle
+import luce_server.internal.model
+
+pub func join(state: model.State*):
+    lifecycle.stop(state)
+    state.lifecycle.join_lock.lock()
+    defer state.lifecycle.join_lock.unlock()
+    if state.lifecycle.joined:
+        return
+    for index in 0..<state.lifecycle.application_count:
+        (state.lifecycle.applications[index] else trap("application worker is missing")).cancel()
+    for index in 0..<state.lifecycle.thread_count:
+        state.lifecycle.threads[index].join() catch:
+            trap("a server thread could not be joined")
+    state.lifecycle.thread_count = 0
+    for index in 0..<state.lifecycle.application_count:
+        var application = state.lifecycle.applications[index] else trap("application worker is missing")
+        state.lifecycle.applications[index] = none
+        application.close()
+    state.lifecycle.application_count = 0
+    state.lifecycle.joined = true
+    state.listener.destroy()
+    dispatch_queue.drain(state)

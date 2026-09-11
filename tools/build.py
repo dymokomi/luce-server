@@ -23,7 +23,7 @@ def build(entry: Path, output: Path, compiler: Path, opt: int = 0) -> None:
         shutil.copytree(ROOT / "src/luce_server", source / "luce_server",
                         ignore=shutil.ignore_patterns(".DS_Store"))
         shutil.copy2(entry, source / "main.lucb")
-        (project / "luce.toml").write_text('[package]\nname = "luce_server"\nsource = "src"\n')
+        shutil.copy2(ROOT / "luce.toml", project / "luce.toml")
         subprocess.run([str(compiler), "build", str(source / "main.lucb"), "--native",
                         "--opt", str(opt), "-o", str(output)], check=True, cwd=ROOT)
 

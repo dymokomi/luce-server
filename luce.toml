@@ -1,3 +1,8 @@
 [package]
 name = "luce_server"
 source = "src"
+
+[exports]
+http = "luce_server.http"
+websocket = "luce_server.websocket"
+socket = "luce_server.socket"

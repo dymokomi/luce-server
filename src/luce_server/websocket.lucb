@@ -1,13 +1,6 @@
-## WebSocket endpoints share an HTTP listener. Opening events allow the
-## application to approve Origin/identity and choose an offered subprotocol.
-## The Base network pool handles framing, masking, fragments and ping/pong.
-import luce_server.http
+## WebSocket sessions share HTTP listeners through Router.websocket.
+import luce_server.sessions.websocket_session
 
-pub func route(server: http.Server, pattern: str, identifier: i64) -> !:
-    try http.websocket_route(server, pattern, identifier)
-
-pub func accept(request: http.Request, protocol: str) -> !:
-    try http.accept_websocket(request, protocol)
-
-pub func send(request: http.Request, data: const u8[]) -> !:
-    try http.send_message(request, data)
+pub type Session = websocket_session.Session
+pub type Message = websocket_session.Message
+pub type Handler = websocket_session.Handler

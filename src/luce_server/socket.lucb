@@ -1,12 +1,13 @@
-## Raw TCP uses the same bounded pool and application worker ownership as HTTP.
-## Each event is a read chunk, not an application message: consumers own framing.
-import luce_server.http
-import luce_server.internal.model
+## TCP server declarations and scoped byte-stream sessions.
+import luce_server.server
+import luce_server.config
+import luce_server.router
+import luce_server.internal.application_pool
+import luce_server.sessions.tcp_session
 
-pub func open(options: http.Options) -> http.Server!:
-    let server = try http.open(options)
-    ((model.State*)(void*)server).config.raw_socket = true
-    return server
-
-pub func send(request: http.Request, data: const u8[]) -> !:
-    try http.send_message(request, data)
+pub type Server = server.Server
+pub type ServerConfig = config.ServerConfig
+pub type Router = router.Router
+pub type Application = application_pool.Application
+pub type Session = tcp_session.Session
+pub type Handler = tcp_session.Handler

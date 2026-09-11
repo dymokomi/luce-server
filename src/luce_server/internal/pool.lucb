@@ -1,53 +1,70 @@
 ## A fixed pool accepts from one nonblocking listener. There is no thread per
 ## connection and no unbounded userspace accept queue; the OS backlog is bounded.
+
 import io
+import luce_server.internal.dispatch_queue
+import luce_server.internal.http_connection
+import luce_server.internal.lifecycle
+import luce_server.internal.model
+import luce_server.internal.request_state
+import luce_server.internal.shutdown
+import luce_server.internal.wire
+import memory
 import net
 import thread
-import luce_server.internal.model
-import luce_server.internal.http_connection
-import luce_server.internal.messages
-import luce_server.internal.wire
 
 func worker(context: void*?):
     let state = (model.State*)(context else return)
-    while not state.cancellation.is_requested() and not state.draining.load(.acquire):
+    while not state.cancellation.is_requested() and not state.lifecycle.draining.load(.acquire):
         let deadline = net.Deadline.after(100000000) catch:
-            model.stop(state)
+            lifecycle.stop(state)
             return
         discard(state.listener.wait(deadline = deadline, cancellation = &state.cancellation) catch failure:
             if failure.code == net.timed_out:
                 continue
             if failure.code != net.cancelled:
-                discard(state.failures.add(1, .relaxed))
-                model.stop(state)
+                discard(state.counters.failures.add(1, .relaxed))
+                lifecycle.stop(state)
             return)
-        var connection = state.listener.accept(true) catch failure:
+        var accepted = state.listener.accept(true) catch failure:
             if failure.code == io.would_block:
                 continue
-            discard(state.failures.add(1, .relaxed))
+            discard(state.counters.failures.add(1, .relaxed))
             thread.sleep(10)
             continue
+        let slot = alloc net.Connection[1] in memory.heap catch failure:
+            accepted.destroy()
+            discard(state.counters.failures.add(1, .relaxed))
+            continue
+        defer free(slot) in memory.heap
+        slot[0] = accepted
+        let connection = &slot[0]
         defer connection.destroy()
-        if state.cancellation.is_requested() or state.draining.load(.acquire):
+        if state.cancellation.is_requested() or state.lifecycle.draining.load(.acquire):
             return
-        discard(state.accepted.add(1, .relaxed))
-        discard(state.active.add(1, .acq_rel))
-        defer discard(state.active.sub(1, .acq_rel))
+        discard(state.counters.accepted.add(1, .relaxed))
+        discard(state.counters.active.add(1, .acq_rel))
+        defer discard(state.counters.active.sub(1, .acq_rel))
         if state.config.raw_socket:
-            messages.socket(&connection, state) catch failure:
-                discard(state.failures.add(1, .relaxed))
+            let pending = request_state.make_request(state, false) catch failure:
+                discard(state.counters.failures.add(1, .relaxed))
+                continue
+            defer request_state.release_request(pending)
+            pending.kind = model.WorkKind.tcp
+            pending.session_connection = connection
+            discard(dispatch_queue.submit(pending))
         else:
             var final_started = false
-            http_connection.serve(&connection, state, &final_started) catch failure:
-                discard(state.failures.add(1, .relaxed))
+            http_connection.serve(connection, state, &final_started) catch failure:
+                discard(state.counters.failures.add(1, .relaxed))
                 if not final_started:
-                    wire.fail(&connection, state, wire.error_status(failure.code))
+                    wire.fail(connection, state, wire.error_status(failure.code))
 
 pub func start(state: model.State*) -> !:
-    errdefer model.join(state)
-    state.threads[0] = try thread.spawn(model.clock_worker, (void*)state, name = "luce-clock")
-    state.thread_count = 1
+    errdefer shutdown.join(state)
+    state.lifecycle.threads[0] = try thread.spawn(lifecycle.clock_worker, (void*)state, name = "luce-clock")
+    state.lifecycle.thread_count = 1
     for index in 0..<state.config.network_threads:
-        state.threads[state.thread_count] = try thread.spawn(worker, (void*)state, name = "luce-network")
-        state.thread_count += 1
-    state.started.store(true, .release)
+        state.lifecycle.threads[state.lifecycle.thread_count] = try thread.spawn(worker, (void*)state, name = "luce-network")
+        state.lifecycle.thread_count += 1
+    state.lifecycle.started.store(true, .release)

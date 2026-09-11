@@ -1,8 +1,9 @@
 ## Opt-in process signal ownership. The handler only advances a lock-free atomic
 ## counter; normal server clock threads perform the actual drain and cleanup.
 ## Restore previous handlers when the last subscribing server closes.
-import sync
+
 import luce_server.internal.storage
+import sync
 
 type Handler = func(i32) -> unit
 extern func set_handler as "signal"(number: i32, handler: Handler?) -> Handler?

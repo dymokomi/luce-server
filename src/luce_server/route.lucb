@@ -1,0 +1,49 @@
+## A retained handler paired with an immutable method and path pattern.
+
+import interop
+import luce_server.internal.storage
+import luce_server.internal.url
+import luce_server.request
+import luce_server.response
+import ownership
+
+pub type Handler = interop.Callback[interop.View[request.Request], interop.Reference[response.Response]]
+
+pub struct Route:
+    var method: str
+    var pattern: str
+    var handler: Handler?
+
+    pub func init(method: str, pattern: str, handler: Handler) -> !:
+        try url.validate_pattern(pattern)
+        let copied_method = try storage.copy(method)
+        errdefer storage.release(copied_method)
+        let copied_pattern = try storage.copy(pattern)
+        self.method = copied_method
+        self.pattern = copied_pattern
+        self.handler = handler.clone()
+
+    pub mutating func close():
+        storage.release(self.method)
+        storage.release(self.pattern)
+        self.method = ""
+        self.pattern = ""
+        if let handler = self.handler:
+            self.handler = none
+            handler.release()
+
+    pub func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        if let handler = self.handler:
+            handler.trace(visit, context)
+
+pub let route_type: interop.Type[Route] = interop.Type[Route]("Route", Route.close, Route.trace, closeable = true)
+
+pub func get_method(value: interop.Reference[Route]) -> str!:
+    return (try value.get()).method
+
+pub func get_pattern(value: interop.Reference[Route]) -> str!:
+    return (try value.get()).pattern
+
+pub func get_handler(value: interop.Reference[Route]) -> Handler!:
+    let callback = (try value.get()).handler else error(storage.closed, "route is closed")
+    return callback.clone()

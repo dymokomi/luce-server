@@ -1,0 +1,237 @@
+## A WebSocket session is valid for its handler's scope. The handler can send
+## before receiving; frame parsing, fragmentation and control replies stay here.
+
+import interop
+import io
+import luce_server.body
+import luce_server.internal.body as body_storage
+import luce_server.internal.lifecycle
+import luce_server.internal.model
+import luce_server.internal.responses
+import luce_server.internal.storage
+import luce_server.internal.wire
+import luce_server.response
+import net
+import ownership
+import time
+import utf8
+
+pub struct Message:
+    var payload: interop.Reference[body.Body]?
+    var text_message: bool
+
+    pub func is_text() -> bool:
+        return self.text_message
+
+    pub func body() -> interop.Reference[body.Body]:
+        return (self.payload else trap("WebSocket message is closed")).clone()
+
+    pub func bytes(limit: i64 = 1048576) -> const u8[]!:
+        return try (self.payload else error(storage.closed, "WebSocket message is closed")).value().bytes(limit)
+
+    pub func text(limit: i64 = 1048576) -> str!:
+        if not self.text_message:
+            error(storage.invalid, "WebSocket message is binary")
+        return try (self.payload else error(storage.closed, "WebSocket message is closed")).value().text(limit)
+
+    pub mutating func close():
+        if let payload = self.payload:
+            self.payload = none
+            payload.release()
+
+    pub func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        if let payload = self.payload:
+            payload.trace(visit, context)
+
+pub let message_type: interop.Type[Message] = interop.Type[Message]("WebSocket message", Message.close, Message.trace, closeable = true)
+
+pub struct Session:
+    var state: SessionState*
+
+    pub func header(name: str) -> str?!:
+        let value = self.state.pending.http().head.field(name) else return none
+        var decoder: utf8.Decoder
+        for byte in value.bytes:
+            discard(try decoder.push(byte))
+        try decoder.finish()
+        return value
+
+    pub func accept(protocol: str = "") -> !:
+        let state = self.state
+        if state.accepted or state.closed:
+            error(storage.closed, "WebSocket opening was already answered")
+        var encoded: u8[4096]
+        let head = try net.websocket_encode_response(encoded, state.pending.http().head, protocol)
+        var destination = try wire.stream(state.connection, state.pending.owner, state.pending.owner.config.response_timeout_ms)
+        try io.write_all(&destination, head)
+        state.accepted = true
+
+    pub func reject(reply: interop.Reference[response.Response]) -> !:
+        let state = self.state
+        if state.accepted or state.closed:
+            error(storage.closed, "WebSocket opening was already answered")
+        let data = try response.transfer(reply, state.pending.owner.config.response_limit)
+        state.pending.http().reply.close()
+        state.pending.http().reply = data
+        state.closed = true
+        var destination = try wire.stream(state.connection, state.pending.owner, state.pending.owner.config.response_timeout_ms)
+        try responses.send(&destination, state.pending, false)
+
+    pub func send_text(value: str) -> !:
+        try self.state.send(net.WebSocketOpcode.text, value.bytes)
+
+    pub func send_bytes(value: const u8[]) -> !:
+        try self.state.send(net.WebSocketOpcode.binary, value)
+
+    pub func send(value: interop.Reference[Message]) -> !:
+        let message = try value.get()
+        let bytes = try message.bytes((i64)self.state.pending.owner.config.response_limit)
+        try self.state.send(net.WebSocketOpcode.text if message.is_text() else net.WebSocketOpcode.binary, bytes)
+
+    pub func receive() -> interop.Reference[Message]?!:
+        return self.state.receive() catch failure:
+            self.state.report_error(failure.code)
+            error(failure.code, failure.message)
+
+    pub func close(code: u16 = 1000) -> !:
+        try self.state.close(code)
+
+    pub func shutdown_server():
+        lifecycle.begin_drain(self.state.pending.owner)
+
+pub let session_type: interop.ViewType[Session] = interop.ViewType[Session]("WebSocket session")
+pub type Handler = interop.Callback[interop.View[Session], unit]
+
+struct SessionState:
+    var pending: model.Exchange*
+    var connection: net.Connection*
+    var input: wire.Input*
+    var decoder: net.WebSocketDecoder
+    var encoder: net.WebSocketEncoder
+    var accepted: bool
+    var closed: bool
+
+    mutating func send(opcode: net.WebSocketOpcode, payload: const u8[]) -> !:
+        if not self.accepted or self.closed:
+            error(storage.closed, "WebSocket session is not open")
+        var destination = try wire.stream(self.connection, self.pending.owner, self.pending.owner.config.response_timeout_ms)
+        try self.encoder.write(&destination, opcode, payload)
+
+    mutating func receive() -> interop.Reference[Message]?!:
+        if self.closed:
+            return none
+        if not self.accepted:
+            error(storage.conflict, "accept the WebSocket before receiving messages")
+        let server = self.pending.owner
+        var payload = body_storage.Body(bytes = storage.Buffer(maximum = server.config.memory_body_limit), maximum = server.config.body_limit)
+        defer payload.destroy()
+        var control = storage.Buffer(maximum = 125)
+        defer control.destroy()
+        var output: u8[16384]
+        var message_until: u64 = 0
+        var text_message = false
+        var message_started = false
+        while not server.cancellation.is_requested():
+            if server.lifecycle.draining.load(.acquire):
+                try self.close(1001)
+                return none
+            if message_until != 0 and time.now() >= message_until:
+                error(net.timed_out, "WebSocket message deadline expired")
+            let deadline = net.Deadline.at(message_until) if message_until != 0 else try net.Deadline.after(server.config.idle_timeout_ms * 1000000)
+            var source = try net.DeadlineStream.over(self.connection, deadline, &server.cancellation)
+            if self.input.available().length == 0 and not try self.input.fill(&source):
+                try self.decoder.finish()
+                self.closed = true
+                return none
+            if message_until == 0:
+                message_until = time.now() + server.config.request_timeout_ms * 1000000
+            let step = try self.decoder.consume(self.input.available(), output)
+            self.input.consume(step.consumed)
+            if (u8)step.opcode >= 8:
+                if step.frame_start:
+                    control.clear()
+                try control.append(output[..<step.written])
+                if step.frame_end:
+                    if step.opcode == net.WebSocketOpcode.ping:
+                        try self.send(net.WebSocketOpcode.pong, control.view())
+                    elif step.opcode == net.WebSocketOpcode.close:
+                        try self.send(net.WebSocketOpcode.close, control.view())
+                        self.closed = true
+                        return none
+                    if not message_started:
+                        message_until = 0
+                continue
+            if step.frame_start and step.opcode != net.WebSocketOpcode.continuation:
+                message_started = true
+                text_message = step.opcode == net.WebSocketOpcode.text
+            try payload.append(output[..<step.written], server.temporary_directory)
+            if step.message_end:
+                let owned_body = try body.take(&payload)
+                let native = new Message(owned_body, text_message) catch failure:
+                    owned_body.release()
+                    error(failure.code, failure.message)
+                return try interop.Reference[Message].adopt(native, message_type)
+        error(net.cancelled, "WebSocket server stopped")
+
+    mutating func report_error(code: ErrorCode):
+        if self.closed or not self.accepted:
+            return
+        var close_code: u16 = 1011
+        if code == net.websocket_invalid:
+            close_code = 1002
+        elif code == utf8.invalid_sequence or code == utf8.incomplete_sequence:
+            close_code = 1007
+        elif code == net.websocket_limit or code == storage.limit:
+            close_code = 1009
+        elif code == net.cancelled or code == net.timed_out:
+            close_code = 1001
+        self.closed = true
+        let deadline = net.Deadline.after(1000000000) catch:
+            return
+        var destination = net.DeadlineStream.over(self.connection, deadline) catch:
+            return
+        let payload: u8[2] = [(u8)(close_code >> 8), (u8)close_code]
+        self.encoder.write(&destination, net.WebSocketOpcode.close, payload) catch: return
+
+    mutating func close(code: u16) -> !:
+        if self.closed:
+            return
+        if not self.accepted:
+            error(storage.conflict, "WebSocket has not been accepted")
+        # A closing server gives its peer one bounded opportunity to acknowledge.
+        var stream = try net.DeadlineStream.over(self.connection, try net.Deadline.after(1000000000))
+        let payload: u8[2] = [(u8)(code >> 8), (u8)code]
+        try self.encoder.write(&stream, net.WebSocketOpcode.close, payload)
+        self.closed = true
+        var discarded: u8[16384]
+        while true:
+            if self.input.available().length == 0:
+                let filled = self.input.fill(&stream) catch: return
+                if not filled:
+                    return
+            let step = self.decoder.consume(self.input.available(), discarded) catch: return
+            self.input.consume(step.consumed)
+            if step.opcode == net.WebSocketOpcode.close and step.frame_end:
+                return
+
+## Called only by the router while transport holds its connection/input alive.
+pub func dispatch(pending: model.Exchange*, handler: Handler, lease: interop.Lease) -> !:
+    let connection = pending.session_connection else trap("WebSocket has no connection")
+    let input = (wire.Input*)(pending.session_input else trap("WebSocket has no input"))
+    let server = pending.owner
+    var state = SessionState(pending, connection, input,
+        net.WebSocketDecoder.create(true, (u64)server.config.body_limit, (u64)server.config.body_limit),
+        net.WebSocketEncoder.create(false, (u64)server.config.response_limit, (u64)server.config.response_limit), false, false)
+    let view = try interop.View[Session].make(Session(&state), session_type, lease)
+    defer view.release()
+    let result = handler.invoke(view)
+    defer result.release()
+    discard(result.get() catch failure:
+        state.report_error(failure.code)
+        error(failure.code, failure.message))
+    if state.accepted:
+        try state.close(1000)
+    elif not state.closed:
+        var destination = try wire.stream(connection, server, server.config.response_timeout_ms)
+        try responses.content(pending, 403, "text/plain; charset=utf-8", b"WebSocket was not accepted")
+        try responses.send(&destination, pending, false)

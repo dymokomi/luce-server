@@ -1,0 +1,84 @@
+
+## A queue owns one reference, transferred to the application by take(). A
+## timeout can remove a queued request without racing an application's claim.
+import luce_server.internal.model
+import luce_server.internal.request_state
+import time
+
+pub func submit(request: model.Exchange*) -> bool:
+    let state = request.owner
+    state.dispatch.lock.lock()
+    defer state.dispatch.lock.unlock()
+    if state.cancellation.is_requested() or state.dispatch.queue_count == state.dispatch.queue.length:
+        return false
+    request_state.retain_request(request)
+    state.dispatch.queue[(state.dispatch.queue_head + state.dispatch.queue_count) % state.dispatch.queue.length] = request
+    state.dispatch.queue_count += 1
+    state.dispatch.ready.signal()
+    state.dispatch.waiting += 1
+    let deadline = time.now() + state.config.application_timeout_ms * 1000000
+    while not request.done:
+        let session_active = request.session_connection != none and request.claimed
+        if not session_active and (state.cancellation.is_requested() or time.now() >= deadline):
+            break
+        state.dispatch.changed.wait(&state.dispatch.lock)
+    state.dispatch.waiting -= 1
+    if not request.done:
+        request.expired = true
+        remove_queued(state, request)
+    return request.done and not request.abandoned and not request.expired
+
+## Called with the state lock. Remove a timed-out entry immediately so absent
+## application workers cannot accumulate temporary files or stale queue slots.
+func remove_queued(state: model.State*, request: model.Exchange*):
+    for offset in 0..<state.dispatch.queue_count:
+        let slot = (state.dispatch.queue_head + offset) % state.dispatch.queue.length
+        if state.dispatch.queue[slot] != request:
+            continue
+        var next = offset + 1
+        while next < state.dispatch.queue_count:
+            state.dispatch.queue[(state.dispatch.queue_head + next - 1) % state.dispatch.queue.length] = state.dispatch.queue[(state.dispatch.queue_head + next) % state.dispatch.queue.length]
+            next += 1
+        state.dispatch.queue[(state.dispatch.queue_head + state.dispatch.queue_count - 1) % state.dispatch.queue.length] = none
+        state.dispatch.queue_count -= 1
+        request_state.release_request(request)
+        return
+
+pub func take(state: model.State*) -> model.Exchange*?:
+    state.dispatch.lock.lock()
+    defer state.dispatch.lock.unlock()
+    while true:
+        while state.dispatch.queue_count > 0:
+            let request = state.dispatch.queue[state.dispatch.queue_head] else trap("request queue lost an entry")
+            state.dispatch.queue[state.dispatch.queue_head] = none
+            state.dispatch.queue_head = (state.dispatch.queue_head + 1) % state.dispatch.queue.length
+            state.dispatch.queue_count -= 1
+            if request.expired or state.cancellation.is_requested():
+                request_state.release_request(request)
+                continue
+            request.claimed = true
+            return request
+        if state.cancellation.is_requested():
+            return none
+        state.dispatch.ready.wait(&state.dispatch.lock)
+
+pub func abandon(request: model.Exchange*):
+    let state = request.owner
+    state.dispatch.lock.lock()
+    if not request.done:
+        request.abandoned = true
+        request.done = true
+        state.dispatch.changed.broadcast()
+    state.dispatch.lock.unlock()
+    request_state.release_request(request)
+
+
+pub func drain(state: model.State*):
+    state.dispatch.lock.lock()
+    while state.dispatch.queue_count > 0:
+        let request = state.dispatch.queue[state.dispatch.queue_head] else trap("request queue lost an entry")
+        state.dispatch.queue[state.dispatch.queue_head] = none
+        state.dispatch.queue_head = (state.dispatch.queue_head + 1) % state.dispatch.queue.length
+        state.dispatch.queue_count -= 1
+        request_state.release_request(request)
+    state.dispatch.lock.unlock()

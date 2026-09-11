@@ -1,13 +1,14 @@
 ## Fixed connection input storage preserves bytes beyond a head, body or frame.
 ## All transfers use net's nonblocking deadline/cancellation adapter.
+
 import io
+import luce_server.internal.dates
+import luce_server.internal.model
+import luce_server.internal.storage
 import memory
 import net
 import time
 import utf8
-import luce_server.internal.dates
-import luce_server.internal.model
-import luce_server.internal.storage
 
 pub struct Input:
     pub var bytes: u8[32768]
@@ -50,14 +51,14 @@ pub struct Input:
 pub func stream(connection: net.Connection*, state: model.State*, milliseconds: u64) -> net.DeadlineStream!:
     return try net.DeadlineStream.over(connection, try net.Deadline.after(milliseconds * 1000000), &state.cancellation)
 
-pub func read_body(input: Input*, source: io.Reader, request: model.Pending*) -> !:
-    var decoder = try net.HttpBodyDecoder.create(request.head.body_kind, request.head.body_length, (u64)request.owner.config.body_limit)
+pub func read_body(input: Input*, source: io.Reader, request: model.Exchange*) -> !:
+    var decoder = try net.HttpBodyDecoder.create(request.http().head.body_kind, request.http().head.body_length, (u64)request.owner.config.body_limit)
     while not decoder.finished():
         if input.available().length == 0 and not try input.fill(source):
             try decoder.finish()
             break
         let step = try decoder.consume(input.available())
-        try request.payload.append(step.body, request.owner.temporary_directory)
+        try request.http().payload.append(step.body, request.owner.temporary_directory)
         input.consume(step.consumed)
     try decoder.finish()
 

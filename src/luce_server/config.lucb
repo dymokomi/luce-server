@@ -1,0 +1,47 @@
+## Copied configuration, validated before any listener or thread is acquired.
+
+import luce_server.internal.storage
+import net
+import strings
+
+pub struct ServerConfig:
+    pub var address: str = "127.0.0.1"
+    pub var port: i64 = 8080
+    pub var network_workers: i64 = 8
+    pub var application_workers: i64 = 2
+    pub var backlog: i64 = 128
+    pub var request_timeout_ms: i64 = 30000
+    pub var idle_timeout_ms: i64 = 5000
+    pub var response_timeout_ms: i64 = 30000
+    pub var application_timeout_ms: i64 = 30000
+    pub var shutdown_timeout_ms: i64 = 5000
+    pub var body_limit: i64 = 67108864
+    pub var memory_body_limit: i64 = 65536
+    pub var response_limit: i64 = 1048576
+    pub var requests_per_connection: i64 = 100
+    pub var temporary_directory: str = "/tmp"
+
+    pub func validate() -> !:
+        discard(net.IpAddress.parse(self.address) else error(storage.invalid, "listen address must be numeric IPv4 or IPv6"))
+        if self.port < 0 or self.port > 65535 or self.network_workers < 1 or self.network_workers > 64 or self.application_workers < 1 or self.application_workers > 32 or self.backlog < 1 or self.backlog > 65535:
+            error(storage.invalid, "invalid listener or worker configuration")
+        if self.body_limit < 1 or self.body_limit > 1073741824 or self.memory_body_limit < 0 or self.memory_body_limit > self.body_limit or self.response_limit < 1 or self.response_limit > 67108864 or self.requests_per_connection < 1 or self.requests_per_connection > 1000000:
+            error(storage.invalid, "invalid request or response limits")
+        try timeout(self.request_timeout_ms)
+        try timeout(self.idle_timeout_ms)
+        try timeout(self.response_timeout_ms)
+        try timeout(self.application_timeout_ms)
+        try timeout(self.shutdown_timeout_ms)
+        if self.temporary_directory.length == 0 or strings.contains(self.temporary_directory, "\0"):
+            error(storage.invalid, "invalid temporary directory")
+
+func timeout(value: i64) -> !:
+    if value < 1 or value > 3600000:
+        error(storage.invalid, "timeouts must be between 1 and 3600000 milliseconds")
+
+pub struct Statistics:
+    pub let connections: i64
+    pub let active_connections: i64
+    pub let completed_requests: i64
+    pub let failures: i64
+    pub let outstanding_requests: i64

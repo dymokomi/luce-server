@@ -1,55 +1,99 @@
-## Independent clients drive this Base consumer. Application workers deliberately
-## exercise concurrent dispatch, abandonment and late replies during shutdown.
-import io
-import strings
+## Independent wire clients use the same object API as the Luce application.
+## Factories build retained handlers on their application worker; no test thread
+## attaches tokens or reaches into transport state.
+import http
+import websocket
+import socket
+import interop
+import ownership
 import thread
-import time
-import luce_server.http
-import luce_server.socket
-import luce_server.websocket
-
-struct Application:
-    var token: i64
-    var upload_directory: str
-    var raw: bool
+import json
 
 var parallel_handlers: @u64
 var peak_handlers: @u64
 
-func dispatch(request: http.Request, application: Application*) -> !:
-    if application.raw:
-        let bytes = try http.body_bytes(request, 1048576)
-        if (str)bytes == "stop":
-            try http.shutdown_after_reply(request)
-        try socket.send(request, bytes)
-        return
-    let identifier = http.route_id(request)
-    if identifier == 1:
-        try http.json(request, 200, "{\"ok\":true}")
-    elif identifier == 2:
-        try http.reply(request, 200, "application/octet-stream", try http.body_bytes(request, 1048576))
-    elif identifier == 3:
-        try http.text(request, 200, http.parameter(request, "id") else "missing")
-    elif identifier == 4:
-        try http.text(request, 200, (try http.query(request, "name")) else "missing")
-    elif identifier == 5 or identifier == 6:
+func failed(code: ErrorCode, message: str) -> interop.Outcome[interop.Reference[http.Response]]:
+    let copied = interop.copy_text(message) catch failure:
+        return interop.Outcome[interop.Reference[http.Response]].failure(failure.code, interop.Owned[str]("error text allocation failed"))
+    return interop.Outcome[interop.Reference[http.Response]].failure(code, copied)
+
+func reply(text: str, status: i64 = 200) -> interop.Outcome[interop.Reference[http.Response]]:
+    let value = http.Response.bytes(text.bytes, "text/plain; charset=utf-8", status) catch failure:
+        return failed(failure.code, failure.message)
+    return interop.Outcome[interop.Reference[http.Response]].success(interop.Owned[interop.Reference[http.Response]](value, &value.owner.header))
+
+func owned(value: interop.Reference[http.Response]) -> interop.Outcome[interop.Reference[http.Response]]:
+    return interop.Outcome[interop.Reference[http.Response]].success(interop.Owned[interop.Reference[http.Response]](value, &value.owner.header))
+
+func session_failure(code: ErrorCode, message: str) -> interop.Outcome[unit]:
+    let copy = interop.copy_text(message) catch failure:
+        return interop.Outcome[unit].failure(failure.code, interop.Owned[str]("error text allocation failed"))
+    return interop.Outcome[unit].failure(code, copy)
+
+struct Handlers:
+    var uploads: interop.Owned[str]
+    var retained_body: interop.Reference[http.Body]?
+    var expired_request: interop.View[http.Request]?
+    var expired_websocket: interop.View[websocket.Session]?
+    var expired_tcp: interop.View[socket.Session]?
+
+    func ping(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
+        discard(view)
+        var data = json.Value() catch failure: return failed(failure.code, failure.message)
+        defer data.close()
+        data.set_boolean("ok", true) catch failure: return failed(failure.code, failure.message)
+        let response = http.Response.bytes(data.encode().bytes, "application/json") catch failure: return failed(failure.code, failure.message)
+        return owned(response)
+
+    func echo(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
+        let body = view.value().body() catch failure: return failed(failure.code, failure.message)
+        defer body.release()
+        let bytes = body.value().bytes(1048576) catch failure: return failed(failure.code, failure.message)
+        let response = http.Response.bytes(bytes) catch failure: return failed(failure.code, failure.message)
+        return owned(response)
+
+    func item(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
+        return reply(view.value().parameter("id") else "missing")
+
+    func query(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
+        let value = view.value().query("name") catch failure: return failed(failure.code, failure.message)
+        return reply(value else "missing")
+
+    func upload(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
         var path: u8[4096]
-        let name = http.parameter(request, "name") else "missing"
-        let destination = try format(path, f"{application.upload_directory}/{name}")
-        if identifier == 5:
-            try http.save_body(request, destination, false)
-            try http.json(request, 201, "{\"stored\":true}")
-        else:
-            try http.reply_file(request, destination)
-    elif identifier == 7:
-        try http.shutdown_after_reply(request)
-        try http.text(request, 200, "bye")
-    elif identifier == 8:
-        return
-    elif identifier == 9:
+        let name = view.value().parameter("name") else "missing"
+        let destination = format(path, f"{self.uploads.value}/{name}") catch failure: return failed(failure.code, failure.message)
+        let body = view.value().body() catch failure: return failed(failure.code, failure.message)
+        defer body.release()
+        body.value().save(destination) catch failure: return failed(failure.code, failure.message)
+        return reply("stored", 201)
+
+    func download(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
+        var path: u8[4096]
+        let name = view.value().parameter("name") else "missing"
+        let destination = format(path, f"{self.uploads.value}/{name}") catch failure: return failed(failure.code, failure.message)
+        let response = http.Response.file(destination) catch failure: return failed(failure.code, failure.message)
+        return owned(response)
+
+    func shutdown(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
+        discard(view)
+        let response = http.Response.bytes(b"bye") catch failure: return failed(failure.code, failure.message)
+        response.value().shutdown_after() catch failure:
+            response.release()
+            return failed(failure.code, failure.message)
+        return owned(response)
+
+    func failure(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
+        discard(view)
+        return failed(http.invalid_state, self.uploads.value)
+
+    func slow(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
+        discard(view)
         thread.sleep(800)
-        try http.text(request, 200, "late")
-    elif identifier == 10:
+        return reply("late")
+
+    func parallel(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
+        discard(view)
         let active = parallel_handlers.add(1, .acq_rel) + 1
         var peak = peak_handlers.load(.acquire)
         while peak < active:
@@ -60,118 +104,174 @@ func dispatch(request: http.Request, application: Application*) -> !:
         thread.sleep(100)
         discard(parallel_handlers.sub(1, .acq_rel))
         var buffer: u8[64]
-        try http.text(request, 200, try format(buffer, f"{peak_handlers.load(.acquire)}"))
-    elif identifier == 11:
-        if http.is_websocket_open(request):
-            if (try http.header(request, "Origin")) == "http://blocked.test":
-                try http.text(request, 403, "origin refused")
-            else:
-                try websocket.accept(request, "")
-        else:
-            let data = try http.body_bytes(request, 1048576)
-            if (str)data == "close":
-                try http.close_after_reply(request)
-            try websocket.send(request, data)
-    else:
-        try http.text(request, 500, "unregistered handler")
+        let text = format(buffer, f"{peak_handlers.load(.acquire)}") catch failure: return failed(failure.code, failure.message)
+        return reply(text)
 
-func application_worker(context: void*?):
-    let application = (Application*)(context else return)
-    let worker = http.attach(application.token) catch:
-        return
-    defer http.close_worker(worker)
-    while let request = http.next(worker):
-        defer http.close_request(request)
-        dispatch(request, application) catch failure:
-            http.text(request, 500, "handler failed") catch:
-                discard(0)
+    mutating func retain(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
+        if let previous = self.expired_request:
+            assert(not previous.is_valid())
+            previous.release()
+        if let previous = self.retained_body:
+            previous.release()
+        self.expired_request = view.clone()
+        self.retained_body = view.value().body() catch failure: return failed(failure.code, failure.message)
+        return reply("retained")
+
+    mutating func ws(view: interop.View[websocket.Session]) -> interop.Outcome[unit]:
+        if let previous = self.expired_websocket:
+            assert(not previous.is_valid())
+            previous.release()
+        self.expired_websocket = view.clone()
+        let session = view.value()
+        let origin = session.header("Origin") catch failure: return session_failure(failure.code, failure.message)
+        if origin == "http://blocked.test":
+            let response = http.Response.bytes(b"origin refused", status = 403) catch failure: return session_failure(failure.code, failure.message)
+            defer response.release()
+            session.reject(response) catch failure: return session_failure(failure.code, failure.message)
+            return interop.Outcome[unit].success(interop.Owned[unit](()))
+        session.accept() catch failure: return session_failure(failure.code, failure.message)
+        while true:
+            let next = session.receive() catch failure: return session_failure(failure.code, failure.message)
+            let message = next else break
+            defer message.release()
+            session.send(message) catch failure: return session_failure(failure.code, failure.message)
+            let bytes = message.value().bytes() catch failure: return session_failure(failure.code, failure.message)
+            if (str)bytes == "close":
+                session.close() catch failure: return session_failure(failure.code, failure.message)
+                break
+        return interop.Outcome[unit].success(interop.Owned[unit](()))
+
+    func ws_greeting(view: interop.View[websocket.Session]) -> interop.Outcome[unit]:
+        let session = view.value()
+        session.accept() catch failure: return session_failure(failure.code, failure.message)
+        session.send_text("hello before input") catch failure: return session_failure(failure.code, failure.message)
+        let next = session.receive() catch failure: return session_failure(failure.code, failure.message)
+        if let message = next:
+            message.release()
+        return interop.Outcome[unit].success(interop.Owned[unit](()))
+
+    mutating func tcp(view: interop.View[socket.Session]) -> interop.Outcome[unit]:
+        if let previous = self.expired_tcp:
+            assert(not previous.is_valid())
+            previous.release()
+        self.expired_tcp = view.clone()
+        let session = view.value()
+        while true:
+            let bytes = session.read() catch failure: return session_failure(failure.code, failure.message)
+            if bytes.length == 0:
+                break
+            session.write(bytes) catch failure: return session_failure(failure.code, failure.message)
+            if (str)bytes == "stop":
+                session.shutdown_server()
+                break
+        return interop.Outcome[unit].success(interop.Owned[unit](()))
+
+    mutating func close():
+        if let view = self.expired_request:
+            assert(not view.is_valid())
+            let rejected: const http.Request*? = view.get() catch problem:
+                assert(problem.code == interop.expired)
+                recover none
+            assert(rejected == none)
+            view.release()
+        if let body = self.retained_body:
+            assert((body.value().text() catch failure: trap(failure.message)) == "retained payload")
+            assert((str)(body.value().read(3) catch failure: trap(failure.message)) == "ret")
+            assert((str)(body.value().read(64) catch failure: trap(failure.message)) == "ained payload")
+            assert((body.value().read() catch failure: trap(failure.message)).length == 0)
+            body.release()
+        if let view = self.expired_websocket:
+            assert(not view.is_valid())
+            view.release()
+        if let view = self.expired_tcp:
+            assert(not view.is_valid())
+            view.release()
+        self.uploads.release()
+
+    func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        self.uploads.trace(visit, context)
+        if let view = self.expired_request: view.trace(visit, context)
+        if let body = self.retained_body: body.trace(visit, context)
+        if let view = self.expired_websocket: view.trace(visit, context)
+        if let view = self.expired_tcp: view.trace(visit, context)
+
+let handlers_type: interop.Type[Handlers] = interop.Type[Handlers]("test handlers", Handlers.close, Handlers.trace)
+
+func register(router: http.Router*, handlers: interop.Reference[Handlers], method: str, pattern: str,
+              handler: func(const Handlers*, interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]) -> !:
+    let callback = try http.Handler.bind(handlers, handler)
+    defer callback.release()
+    let native = try new http.Route(method, pattern, callback)
+    let declaration = interop.Type[http.Route]("test route", http.Route.close, http.Route.trace)
+    let route = try interop.Reference[http.Route].adopt(native, declaration)
+    defer route.release()
+    try router.add(route)
+
+func configure(data: str, raw: bool) -> interop.Outcome[http.Application]:
+    let copy = interop.copy_text(data) catch failure: trap(failure.message)
+    let native = new Handlers(uploads = copy) catch failure: trap(failure.message)
+    let handlers = interop.Reference[Handlers].adopt(native, handlers_type) catch failure: trap(failure.message)
+    defer handlers.release()
+    var router = http.Router() catch failure: trap(failure.message)
+    defer router.close()
+    if raw:
+        let callback = socket.Handler.bind_mutating(handlers, Handlers.tcp) catch failure: trap(failure.message)
+        defer callback.release()
+        router.socket(callback) catch failure: trap(failure.message)
+    else:
+        register(&router, handlers, "GET", "/ping", Handlers.ping) catch failure: trap(failure.message)
+        register(&router, handlers, "POST", "/echo", Handlers.echo) catch failure: trap(failure.message)
+        register(&router, handlers, "GET", "/items/{id}", Handlers.item) catch failure: trap(failure.message)
+        register(&router, handlers, "GET", "/query", Handlers.query) catch failure: trap(failure.message)
+        register(&router, handlers, "PUT", "/upload/{name}", Handlers.upload) catch failure: trap(failure.message)
+        register(&router, handlers, "GET", "/files/{name}", Handlers.download) catch failure: trap(failure.message)
+        register(&router, handlers, "POST", "/shutdown", Handlers.shutdown) catch failure: trap(failure.message)
+        register(&router, handlers, "POST", "/failure", Handlers.failure) catch failure: trap(failure.message)
+        register(&router, handlers, "GET", "/slow", Handlers.slow) catch failure: trap(failure.message)
+        register(&router, handlers, "GET", "/parallel", Handlers.parallel) catch failure: trap(failure.message)
+        let retained = http.Handler.bind_mutating(handlers, Handlers.retain) catch failure: trap(failure.message)
+        defer retained.release()
+        router.post("/retain", retained) catch failure: trap(failure.message)
+        let ws = websocket.Handler.bind_mutating(handlers, Handlers.ws) catch failure: trap(failure.message)
+        defer ws.release()
+        router.websocket("/ws", ws) catch failure: trap(failure.message)
+        let greeting = websocket.Handler.bind(handlers, Handlers.ws_greeting) catch failure: trap(failure.message)
+        defer greeting.release()
+        router.websocket("/ws/greeting", greeting) catch failure: trap(failure.message)
+    let result = router.application() catch failure: trap(failure.message)
+    return interop.Outcome[http.Application].success(interop.Owned[http.Application](result, result.owner))
+
+func http_factory(data: str) -> interop.Outcome[http.Application]:
+    return configure(data, false)
+
+func tcp_factory(data: str) -> interop.Outcome[http.Application]:
+    return configure(data, true)
+
+func exercise(arguments: str[]) -> !:
+    var options = http.ServerConfig(port = 0, network_workers = 8, application_workers = 2,
+        request_timeout_ms = 700, idle_timeout_ms = 700, application_timeout_ms = 300,
+        response_timeout_ms = 700, shutdown_timeout_ms = 250, memory_body_limit = 1024,
+        body_limit = 8388608, temporary_directory = arguments[2])
+    if arguments[3] == "lifetime":
+        options.memory_body_limit = 4
+    let raw = arguments[3] == "raw"
+    let factory = tcp_factory if raw else http_factory
+    var server = try http.Server(options, interop.WorkerEntry[str, unit, unit].native(factory), arguments[2])
+    defer server.close()
+    if not raw:
+        let native = try new http.StaticRoot(arguments[1])
+        let root = try interop.Reference[http.StaticRoot].adopt(native, interop.Type[http.StaticRoot]("test root", http.StaticRoot.close))
+        defer root.release()
+        try server.mount("/static", root)
+        try server.mount("/", root)
+    try server.shutdown_on_signals()
+    try server.start()
+    print(f"READY {try server.port()}")
+    try server.run()
+    print("STOPPED")
 
 pub func main(arguments: str[]) -> i32!:
     if arguments.length != 4:
         return 2
-    if arguments[3] == "lifetime":
-        return try retained_request(arguments[2])
-    var options = http.defaults()
-    options.port = 0
-    options.network_threads = 8
-    options.request_timeout_ms = 700
-    options.idle_timeout_ms = 700
-    options.application_timeout_ms = 300
-    options.response_timeout_ms = 700
-    options.shutdown_timeout_ms = 250
-    options.memory_body_limit = 1024
-    options.body_limit = 8388608
-    options.temporary_directory = arguments[2]
-    let raw = arguments[3] == "raw"
-    let server = try socket.open(options) if raw else try http.open(options)
-    defer http.close_server(server)
-    if not raw:
-        try http.route(server, "GET", "/ping", 1)
-        try http.route(server, "POST", "/echo", 2)
-        try http.route(server, "GET", "/items/{id}", 3)
-        try http.route(server, "GET", "/query", 4)
-        try http.route(server, "PUT", "/upload/{name}", 5)
-        try http.route(server, "GET", "/files/{name}", 6)
-        try http.route(server, "POST", "/shutdown", 7)
-        try http.route(server, "POST", "/abandon", 8)
-        try http.route(server, "GET", "/slow", 9)
-        try http.route(server, "GET", "/parallel", 10)
-        try websocket.route(server, "/ws", 11)
-        try http.static_files(server, "/static", arguments[1])
-        try http.static_files(server, "/", arguments[1])
-    try http.shutdown_on_signals(server)
-    try http.start(server)
-    var application = Application(token = try http.worker_token(server), upload_directory = arguments[2], raw = raw)
-    let first = try thread.spawn(application_worker, (void*)&application)
-    let second = try thread.spawn(application_worker, (void*)&application)
-    print(f"READY {try http.port(server)}")
-    try first.join()
-    try second.join()
-    print("STOPPED")
-    return 0
-
-## Public ownership contract: a retained request remains readable after its
-## worker and server close, but neither its old token nor a late reply is valid.
-func retained_request(directory: str) -> i32!:
-    var options = http.defaults()
-    options.port = 0
-    options.network_threads = 1
-    options.memory_body_limit = 4
-    options.temporary_directory = directory
-    let server = try socket.open(options)
-    var server_closed = false
-    defer close_server_if_owned(server, &server_closed)
-    try http.start(server)
-    let token = try http.worker_token(server)
-    let worker = try http.attach(token)
-    var worker_closed = false
-    defer close_worker_if_owned(worker, &worker_closed)
-    print(f"READY {try http.port(server)}")
-    let request = http.next(worker) else return 3
-    defer http.close_request(request)
-    http.close_server(server)
-    server_closed = true
-    http.close_worker(worker)
-    worker_closed = true
-    assert((try http.body_text(request, 1024)) == "retained payload")
-    var rejected = false
-    http.send_message(request, b"late") catch failure:
-        assert(failure.code == http.request_closed)
-        rejected = true
-    assert(rejected)
-    rejected = false
-    let stale = http.attach(token) catch failure:
-        assert(failure.code == http.request_closed)
-        rejected = true
-        recover (http.Worker)(void*)0
-    assert(rejected)
-    print("STOPPED")
-    return 0
-
-func close_server_if_owned(server: http.Server, closed: bool*):
-    if not *closed:
-        http.close_server(server)
-
-func close_worker_if_owned(worker: http.Worker, closed: bool*):
-    if not *closed:
-        http.close_worker(worker)
+    try exercise(arguments)
+    return ownership.finish_run(0)

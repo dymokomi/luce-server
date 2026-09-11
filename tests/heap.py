@@ -33,4 +33,4 @@ if __name__ == '__main__':
         integration.http_tests(wrapper, root)
         integration.tcp_tests(wrapper, root)
         integration.lifetime_tests(wrapper, root)
-    print('PASS native heap cleanup: HTTP/WebSocket, TCP, retained requests')
+    print('PASS native heap cleanup: HTTP/WebSocket, TCP, retained bodies and expired views')

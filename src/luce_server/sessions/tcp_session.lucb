@@ -1,0 +1,61 @@
+## TCP sessions expose a byte stream. Reads return arbitrary chunks; application
+## framing is explicit. A callback may send immediately, without waiting for input.
+
+import interop
+import io
+import luce_server.internal.lifecycle
+import luce_server.internal.model
+import luce_server.internal.storage
+import luce_server.internal.wire
+import net
+
+
+pub struct Session:
+    var state: SessionState*
+
+    pub func read(maximum: i64 = 16384) -> const u8[]!:
+        let state = self.state
+        if maximum < 1 or maximum > (i64)state.input.length:
+            error(storage.invalid, "TCP read size must be between 1 and 16384 bytes")
+        if state.closed:
+            return state.input[..<0]
+        let owner = state.pending.owner
+        if owner.lifecycle.draining.load(.acquire):
+            state.closed = true
+            return state.input[..<0]
+        var source = try wire.stream(state.connection, owner, owner.config.idle_timeout_ms)
+        let count = try source.read(state.input[..<(usize)maximum])
+        if count == 0:
+            state.closed = true
+        return state.input[..<count]
+
+    pub func write(data: const u8[]) -> !:
+        let state = self.state
+        if state.closed:
+            error(storage.closed, "TCP session is closed")
+        let owner = state.pending.owner
+        var destination = try wire.stream(state.connection, owner, owner.config.response_timeout_ms)
+        try io.write_all(&destination, data)
+
+    pub func close():
+        self.state.closed = true
+
+    pub func shutdown_server():
+        lifecycle.begin_drain(self.state.pending.owner)
+
+pub let session_type: interop.ViewType[Session] = interop.ViewType[Session]("TCP session")
+pub type Handler = interop.Callback[interop.View[Session], unit]
+
+struct SessionState:
+    var pending: model.Exchange*
+    var connection: net.Connection*
+    var closed: bool
+    var input: u8[16384]
+
+pub func dispatch(pending: model.Exchange*, handler: Handler, lease: interop.Lease) -> !:
+    var state = SessionState(pending = pending, connection = pending.session_connection else trap("TCP session has no connection"))
+    let view = try interop.View[Session].make(Session(&state), session_type, lease)
+    defer view.release()
+    let result = handler.invoke(view)
+    defer result.release()
+    discard(try result.get())

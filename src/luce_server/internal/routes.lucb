@@ -1,7 +1,7 @@
 ## Registration is single-threaded before start. The frozen table is read by all
 ## network threads; application route identifiers contain no callback pointers.
+
 import files
-import net
 import luce_server.internal.storage
 import luce_server.internal.url
 
@@ -13,22 +13,19 @@ pub enum Kind as u8:
 pub struct Route:
     pub var method: str
     pub var pattern: str
-    pub var identifier: i64
     pub var kind: Kind
     pub var root: files.Directory
-    pub var protocol: str
 
     pub mutating func destroy():
         storage.release(self.method)
         storage.release(self.pattern)
-        storage.release(self.protocol)
         self.root.destroy()
 
 pub struct Table:
     pub var entries: Route[128]
     pub var count: usize
 
-    pub mutating func add(method: str, pattern: str, identifier: i64, kind: Kind = Kind.application, protocol: str = "") -> usize!:
+    pub mutating func add(method: str, pattern: str, kind: Kind = Kind.application) -> usize!:
         try url.validate_pattern(pattern)
         if method.length == 0:
             error(storage.invalid, "a route needs a method")
@@ -44,8 +41,7 @@ pub struct Table:
         errdefer storage.release(copied_method)
         let copied_pattern = try storage.copy(pattern)
         errdefer storage.release(copied_pattern)
-        let copied_protocol = try storage.copy(protocol)
-        self.entries[self.count] = Route(method = copied_method, pattern = copied_pattern, identifier = identifier, kind = kind, protocol = copied_protocol)
+        self.entries[self.count] = Route(method = copied_method, pattern = copied_pattern, kind = kind)
         let index = self.count
         self.count += 1
         return index

@@ -1,0 +1,142 @@
+## Server owns listener, both bounded pools and opt-in signal registration.
+## Construction copies configuration; start acquires resources, close joins them.
+
+import c
+import files
+import interop
+import luce_server.config
+import luce_server.internal.application_pool
+import luce_server.internal.lifecycle
+import luce_server.internal.model
+import luce_server.internal.pool
+import luce_server.internal.routes
+import luce_server.internal.shutdown
+import luce_server.internal.signals
+import luce_server.internal.storage
+import luce_server.static_root
+import memory
+import net
+import thread
+
+pub struct Server:
+    var state: model.State*?
+    var address: str
+    var application_data: str
+    var configuration: config.ServerConfig
+    var factory: application_pool.Factory
+    var watch_signals: bool
+    var mounts: routes.Table
+
+    pub func init(configuration: config.ServerConfig, factory: application_pool.Factory, application_data: str = "") -> !:
+        try configuration.validate()
+        let address = try storage.copy(configuration.address)
+        errdefer storage.release(address)
+        let data = try storage.copy(application_data)
+        errdefer storage.release(data)
+        let temporary = try storage.copy(configuration.temporary_directory)
+        self.state = none
+        self.address = address
+        self.application_data = data
+        var copied = configuration
+        copied.address = address
+        copied.temporary_directory = temporary
+        self.configuration = copied
+        self.factory = factory
+        self.watch_signals = false
+        self.mounts = routes.Table()
+
+    pub mutating func shutdown_on_signals() -> !:
+        if self.state != none:
+            error(storage.conflict, "signal handling must be selected before start")
+        self.watch_signals = true
+
+    pub mutating func mount(prefix: str, root: interop.Reference[static_root.StaticRoot]) -> !:
+        if self.state != none:
+            error(storage.conflict, "static mounts must be configured before start")
+        var directory = try static_root.duplicate(root)
+        errdefer directory.destroy()
+        let slot = try self.mounts.add("GET", prefix, routes.Kind.static_files)
+        self.mounts.entries[slot].root = directory
+
+    pub mutating func start() -> !:
+        if self.address.length == 0:
+            error(storage.closed, "server is closed")
+        if self.state != none:
+            error(storage.conflict, "server is already started")
+        let options = self.configuration
+        let temporary = try storage.copy(options.temporary_directory)
+        let state = new model.State(temporary_directory = temporary, config = model.Config(
+            network_threads = (usize)options.network_workers,
+            request_timeout_ms = (u64)options.request_timeout_ms,
+            idle_timeout_ms = (u64)options.idle_timeout_ms,
+            response_timeout_ms = (u64)options.response_timeout_ms,
+            application_timeout_ms = (u64)options.application_timeout_ms,
+            shutdown_timeout_ms = (u64)options.shutdown_timeout_ms,
+            body_limit = (usize)options.body_limit,
+            memory_body_limit = (usize)options.memory_body_limit,
+            response_limit = (usize)options.response_limit,
+            requests_per_connection = (usize)options.requests_per_connection)) in memory.heap catch failure:
+            storage.release(temporary)
+            error(failure.code, failure.message)
+        state.references.store(1, .relaxed)
+        errdefer lifecycle.release(state)
+        errdefer shutdown.join(state)
+        var directory = try files.Directory.open((c.str)temporary)
+        directory.destroy()
+        let ip = net.IpAddress.parse(options.address) else trap("validated address changed")
+        state.listener = try net.Listener.bind(net.SocketAddress(ip = ip, port = (u16)options.port), (i32)options.backlog)
+        try state.listener.set_nonblocking(true)
+        try application_pool.start(state, self.factory, self.application_data, (usize)options.application_workers)
+        for index in 0..<self.mounts.count:
+            let mount = self.mounts.entries[index]
+            let slot = try state.table.add("GET", mount.pattern, routes.Kind.static_files)
+            state.table.entries[slot].root = try mount.root.open_directory(".", false)
+        if self.watch_signals:
+            state.lifecycle.signal_epoch = try signals.subscribe()
+            state.lifecycle.watch_signals = true
+        errdefer unsubscribe(state)
+        try pool.start(state)
+        self.state = state
+
+    pub func port() -> i64!:
+        let state = self.state else error(storage.closed, "server has not started")
+        return (i64)(try state.listener.address()).port
+
+    ## Start explicitly to observe the assigned port before entering run.
+    pub mutating func run() -> !:
+        if self.state == none:
+            try self.start()
+        let state = self.state else trap("started server has no state")
+        while not state.cancellation.is_requested():
+            thread.sleep(10)
+        shutdown.join(state)
+
+    pub func shutdown():
+        if let state = self.state:
+            lifecycle.begin_drain(state)
+
+    pub func statistics() -> config.Statistics:
+        let state = self.state else return config.Statistics(0, 0, 0, 0, 0)
+        return config.Statistics((i64)state.counters.accepted.load(.relaxed), (i64)state.counters.active.load(.relaxed),
+            (i64)state.counters.completed.load(.relaxed), (i64)state.counters.failures.load(.relaxed), (i64)state.counters.outstanding.load(.relaxed))
+
+    pub mutating func close():
+        if let state = self.state:
+            self.state = none
+            shutdown.join(state)
+            unsubscribe(state)
+            lifecycle.release(state)
+        self.mounts.destroy()
+        storage.release(self.address)
+        storage.release(self.application_data)
+        storage.release(self.configuration.temporary_directory)
+        self.address = ""
+        self.application_data = ""
+        self.configuration.temporary_directory = ""
+
+func unsubscribe(state: model.State*):
+    if state.lifecycle.watch_signals:
+        signals.unsubscribe()
+        state.lifecycle.watch_signals = false
+
+pub let server_type: interop.Type[Server] = interop.Type[Server]("Server", Server.close, closeable = true)

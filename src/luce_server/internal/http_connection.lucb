@@ -1,25 +1,28 @@
 ## One persistent HTTP connection, owned by one Base network thread. Completed
 ## requests are serialized on the wire, including pipelined input already read.
+
 import io
-import net
-import strings
+import luce_server.internal.dispatch_queue
+import luce_server.internal.lifecycle
 import luce_server.internal.model
-import luce_server.internal.routes
+import luce_server.internal.request_state
 import luce_server.internal.responses
+import luce_server.internal.routes
 import luce_server.internal.static_files
 import luce_server.internal.storage
 import luce_server.internal.url
 import luce_server.internal.wire
-import luce_server.internal.messages
+import memory
+import net
 
-func allowed(request: model.Pending*) -> bool!:
+func allowed(request: model.Exchange*) -> bool!:
     var methods: str[128]
     var count: usize = 0
     var output = storage.Buffer(maximum = 4096)
     defer output.destroy()
     var get = false
     for entry in request.owner.table.entries[..<request.owner.table.count]:
-        if entry.kind == routes.Kind.static_files or not url.matches(entry.pattern, request.path):
+        if entry.kind == routes.Kind.static_files or not url.matches(entry.pattern, request.http().path):
             continue
         var present = false
         for previous in methods[..<count]:
@@ -48,73 +51,74 @@ func allowed(request: model.Pending*) -> bool!:
     try responses.field(request, "Allow", (str)output.view())
     return true
 
-func automatic(request: model.Pending*) -> !:
+func automatic(request: model.Exchange*) -> !:
     if try allowed(request):
-        let status: i64 = 204 if request.head.method == "OPTIONS" else 405
+        let status: i64 = 204 if request.http().head.method == "OPTIONS" else 405
         try responses.content(request, status, "text/plain; charset=utf-8", "".bytes)
     else:
         try responses.content(request, 404, "text/plain; charset=utf-8", "not found\n".bytes)
 
 pub func serve(connection: net.Connection*, state: model.State*, final_started: bool*) -> !:
-    var input: wire.Input
+    let input = try new wire.Input() in memory.heap
+    defer free(input) in memory.heap
     var served: usize = 0
-    while not state.cancellation.is_requested() and not state.draining.load(.acquire) and served < state.config.requests_per_connection:
+    while not state.cancellation.is_requested() and not state.lifecycle.draining.load(.acquire) and served < state.config.requests_per_connection:
         *final_started = false
         var idle = try wire.stream(connection, state, state.config.idle_timeout_ms)
         if input.available().length == 0 and not try input.fill(&idle):
             return
         var source = try wire.stream(connection, state, state.config.request_timeout_ms)
         let head_bytes = try input.head(&source) else return
-        let request = try model.make_request(state)
-        defer model.release_request(request)
-        try request.wire.append(head_bytes)
+        let request = try request_state.make_request(state)
+        defer request_state.release_request(request)
+        try request.http().wire.append(head_bytes)
         input.consume(head_bytes.length)
-        request.head = try net.http_parse_request(request.wire.view(), request.fields, net.HttpLimits(body_bytes = (u64)state.config.body_limit))
-        request.path = try url.request_path(request.head.target, &request.path_buffer)
-        let route = state.table.find(request.head.method, request.path)
-        let mount = state.table.mount(request.path)
-        if route == none and (mount == none or state.table.contains_path(request.path)):
+        request.http().head = try net.http_parse_request(request.http().wire.view(), request.http().fields, net.HttpLimits(body_bytes = (u64)state.config.body_limit))
+        request.http().path = try url.request_path(request.http().head.target, &request.http().path_buffer)
+        let route = state.table.find(request.http().head.method, request.http().path)
+        let mount = state.table.mount(request.http().path)
+        if route == none and (mount == none or state.table.contains_path(request.http().path)):
             try automatic(request)
             var destination = try wire.stream(connection, state, state.config.response_timeout_ms)
             *final_started = true
             try responses.send(&destination, request, false)
+            discard(state.counters.completed.add(1, .relaxed))
             return
-        if request.head.expect_continue:
+        if request.http().head.expect_continue:
             try io.write_all(&source, "HTTP/1.1 100 Continue\r\n\r\n".bytes)
-        try wire.read_body(&input, &source, request)
+        try wire.read_body(input, &source, request)
         if let index = route:
-            request.route_index = index
-            request.route_identifier = state.table.entries[index].identifier
+            request.http().route_index = index
             if state.table.entries[index].kind == routes.Kind.websocket:
-                discard(try net.websocket_check_request(request.head))
-                request.kind = model.EventKind.websocket_open
-            if not model.submit(request):
+                discard(try net.websocket_check_request(request.http().head))
+                request.kind = model.WorkKind.websocket
+            if request.kind == model.WorkKind.websocket:
+                request.session_connection = connection
+                request.session_input = (void*)input
+                # The session handler owns all subsequent wire output. submit
+                # keeps these borrowed pointers alive until that handler exits.
+                *final_started = true
+                if not dispatch_queue.submit(request):
+                    if not request.claimed:
+                        wire.fail(connection, state, 503)
+                return
+            if not dispatch_queue.submit(request):
                 *final_started = true
                 wire.fail(connection, state, 503)
-                return
-            if request.kind == model.EventKind.websocket_open and request.response_status == 101:
-                var encoded: u8[4096]
-                let upgrade = try net.websocket_encode_response(encoded, request.head, (str)request.response_type.view())
-                var destination = try wire.stream(connection, state, state.config.response_timeout_ms)
-                *final_started = true
-                try io.write_all(&destination, upgrade)
-                messages.websocket(connection, &input, request) catch failure:
-                    # A protocol error after 101 cannot become an HTTP response.
-                    discard(state.failures.add(1, .relaxed))
                 return
         else:
             let index = mount else trap("request lost its static mount")
             static_files.serve(request, &state.table.entries[index]) catch failure:
-                request.response_headers.clear()
-                request.response_field_count = 0
+                request.http().reply.headers.clear()
+                request.http().reply.field_count = 0
                 try responses.content(request, 500, "text/plain; charset=utf-8", "file unavailable\n".bytes)
         served += 1
-        let keep = request.head.keep_alive and not request.close_after_response and not request.stop_after_response and not state.draining.load(.acquire) and served < state.config.requests_per_connection
+        let keep = request.http().head.keep_alive and not request.http().reply.close_after and not request.http().reply.stop_after and not state.lifecycle.draining.load(.acquire) and served < state.config.requests_per_connection
         var destination = try wire.stream(connection, state, state.config.response_timeout_ms)
         *final_started = true
         try responses.send(&destination, request, keep)
-        discard(state.completed.add(1, .relaxed))
-        if request.stop_after_response:
-            model.begin_drain(state)
+        discard(state.counters.completed.add(1, .relaxed))
+        if request.http().reply.stop_after:
+            lifecycle.begin_drain(state)
         if not keep:
             return

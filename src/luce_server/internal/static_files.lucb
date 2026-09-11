@@ -1,15 +1,16 @@
 ## Mounts retain an opened root. Each decoded path component is opened relative
 ## to the previous directory, refusing symlinks at every step. Open metadata,
 ## ranges and streaming reads refer to the same regular file descriptor.
+
 import c
 import files
-import strings
-import paths
 import luce_server.internal.model
-import luce_server.internal.routes
 import luce_server.internal.responses
+import luce_server.internal.routes
 import luce_server.internal.storage
 import luce_server.internal.url
+import paths
+import strings
 
 pub func media_type(path: str) -> str:
     let extension = paths.extension(path)
@@ -99,8 +100,8 @@ func matches_tag(value: str, tag: str) -> bool:
         at += 1
     return false
 
-pub func serve(request: model.Pending*, mount: routes.Route*) -> !:
-    if request.head.method != "GET" and request.head.method != "HEAD":
+pub func serve(request: model.Exchange*, mount: routes.Route*) -> !:
+    if request.http().head.method != "GET" and request.http().head.method != "HEAD":
         try responses.content(request, 405, "text/plain; charset=utf-8", "method not allowed\n".bytes)
         try responses.field(request, "Allow", "GET, HEAD")
         return
@@ -109,9 +110,9 @@ pub func serve(request: model.Pending*, mount: routes.Route*) -> !:
     var start = mount.pattern.length
     if mount.pattern == "/":
         start = 1
-    elif start < request.path.length and request.path.bytes[start] == '/':
+    elif start < request.http().path.length and request.http().path.bytes[start] == '/':
         start += 1
-    try relative.append(request.path.bytes[start..])
+    try relative.append(request.http().path.bytes[start..])
     if relative.used == 0 or relative.data[relative.used - 1] == '/':
         try relative.append("index.html".bytes)
     let filename = (str)relative.view()
@@ -130,36 +131,36 @@ pub func serve(request: model.Pending*, mount: routes.Route*) -> !:
     try responses.content(request, 200, media_type(filename), "".bytes)
     try responses.field(request, "ETag", tag)
     try responses.field(request, "Accept-Ranges", "bytes")
-    if let condition = request.head.field("If-Match"):
+    if let condition = request.http().head.field("If-Match"):
         # Metadata validators are weak; only an existence precondition can
         # succeed. Never treat a weak validator as byte-for-byte equivalence.
         if strings.trim(condition) != "*":
-            request.response_status = 412
+            request.http().reply.status = 412
             opened.destroy()
             return
-    if let condition = request.head.field("If-None-Match"):
+    if let condition = request.http().head.field("If-None-Match"):
         if matches_tag(condition, tag):
-            request.response_status = 304
+            request.http().reply.status = 304
             opened.destroy()
             return
     var offset: u64 = 0
     var count = length
-    if request.head.method == "GET":
-        if let range = request.head.field("Range"):
-            let if_range = request.head.field("If-Range")
+    if request.http().head.method == "GET":
+        if let range = request.http().head.field("Range"):
+            let if_range = request.http().head.field("If-Range")
             if if_range == none and strings.starts_with(range, "bytes=") and not strings.contains(range, ","):
                 var range_buffer: u8[96]
                 if let selected = byte_range(range, length):
                     offset = selected.0
                     count = selected.1
-                    request.response_status = 206
+                    request.http().reply.status = 206
                     try responses.field(request, "Content-Range", try format(range_buffer, f"bytes {offset}-{offset + count - 1}/{length}"))
                 else:
-                    request.response_status = 416
+                    request.http().reply.status = 416
                     try responses.field(request, "Content-Range", try format(range_buffer, f"bytes */{length}"))
                     opened.destroy()
                     return
     discard(try opened.seek((i64)offset))
-    request.response_file = opened
-    request.response_file_length = count
-    request.response_is_file = true
+    request.http().reply.file = opened
+    request.http().reply.file_length = count
+    request.http().reply.is_file = true

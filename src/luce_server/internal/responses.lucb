@@ -1,87 +1,23 @@
 ## Response storage is assembled by one application owner, then committed under
 ## the server lock. Network threads observe immutable bytes after commitment.
-import c
-import files
+
 import io
-import net
-import strings
-import paths
-import time
 import luce_server.internal.dates
 import luce_server.internal.model
+import luce_server.internal.response_data
 import luce_server.internal.storage
+import net
+import time
 
-pub func field(request: model.Pending*, name: str, value: str) -> !:
-    if request.response_field_count >= 96:
-        error(storage.limit, "too many application response fields")
-    if name.length == 0:
-        error(storage.invalid, "a response field needs a name")
-    for byte in name.bytes:
-        var valid = (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9')
-        for allowed in "!#$%&'*+-.^_`|~".bytes:
-            if byte == allowed:
-                valid = true
-        if not valid:
-            error(storage.invalid, "invalid response field name")
-    for byte in value.bytes:
-        if byte == 127 or (byte < 32 and byte != '\t'):
-            error(storage.invalid, "invalid response field value")
-    if net.http_equal(name, "content-length") or net.http_equal(name, "transfer-encoding") or net.http_equal(name, "connection") or net.http_equal(name, "content-type") or net.http_equal(name, "date"):
-        error(storage.invalid, "the server owns response framing and content type")
-    var line: u8[8192]
-    var writer = io.SliceWriter.over(line)
-    try io.write_all(&writer, name.bytes)
-    try io.write_all(&writer, ": ".bytes)
-    try io.write_all(&writer, value.bytes)
-    try io.write_all(&writer, "\r\n".bytes)
-    try request.response_headers.append(writer.written())
-    request.response_field_count += 1
-
-pub func content(request: model.Pending*, status: i64, content_type: str, data: const u8[]) -> !:
-    if status < 200 or status > 599:
-        error(storage.invalid, "application response status must be between 200 and 599")
-    if (status == 204 or status == 304) and data.length != 0:
-        error(storage.invalid, "this response status cannot carry a body")
-    for byte in content_type.bytes:
-        if byte < 32 or byte >= 127:
-            error(storage.invalid, "invalid response content type")
-    request.response.clear()
-    request.response_type.clear()
-    request.response_file.destroy()
-    request.response_is_file = false
-    try request.response_type.append(content_type.bytes)
-    try request.response.append(data)
-    request.response_status = (u16)status
-
-pub func file(request: model.Pending*, path: str, content_type: str) -> !:
-    if strings.contains(path, "\0"):
-        error(storage.invalid, "a file path contains NUL")
-    let parent = try storage.copy(paths.directory(path))
-    defer storage.release(parent)
-    let leaf = try storage.copy(paths.base(path))
-    defer storage.release(leaf)
-    var directory = try files.Directory.open((c.str)parent)
-    defer directory.destroy()
-    var opened = try directory.open_file((c.str)leaf, follow_symlinks = false, nonblocking = true)
-    errdefer opened.destroy()
-    let info = try opened.metadata()
-    if info.kind != files.FileKind.regular or info.size < 0:
-        error(storage.invalid, "a response file must be a regular file")
-    try content(request, 200, content_type, "".bytes)
-    request.response_file.destroy()
-    request.response_file = opened
-    request.response_file_length = (u64)info.size
-    request.response_is_file = true
-
-pub func send(destination: io.Writer, request: model.Pending*, keep_alive: bool) -> !:
+pub func send(destination: io.Writer, request: model.Exchange*, keep_alive: bool) -> !:
     var fields: net.HttpField[100]
     var date_buffer: u8[29]
     fields[0] = net.HttpField(name = "Date", value = try dates.format_http(time.unix(), date_buffer))
     var count: usize = 1
-    if request.response_type.used > 0:
-        fields[count] = net.HttpField(name = "Content-Type", value = (str)request.response_type.view())
+    if request.http().reply.content_type.used > 0:
+        fields[count] = net.HttpField(name = "Content-Type", value = (str)request.http().reply.content_type.view())
         count += 1
-    let extra = (str)request.response_headers.view()
+    let extra = (str)request.http().reply.headers.view()
     var at: usize = 0
     while at < extra.length:
         let start = at
@@ -97,26 +33,32 @@ pub func send(destination: io.Writer, request: model.Pending*, keep_alive: bool)
         fields[count] = net.HttpField(name = name, value = (str)extra.bytes[value_start..<at])
         count += 1
         at += 2
-    let length = request.response_file_length if request.response_is_file else (u64)request.response.used
-    let no_body = request.response_status == 204 or request.response_status == 304
+    let length = request.http().reply.file_length if request.http().reply.is_file else (u64)request.http().reply.bytes.used
+    let no_body = request.http().reply.status == 204 or request.http().reply.status == 304
     var head_buffer: u8[16384]
-    let encoded = try net.http_encode_head(head_buffer, net.HttpHead(method = request.head.method, version = request.head.version,
-        status = request.response_status, fields = fields[..<count], body_kind = net.HttpBodyKind.empty if no_body else net.HttpBodyKind.fixed,
+    let encoded = try net.http_encode_head(head_buffer, net.HttpHead(method = request.http().head.method, version = request.http().head.version,
+        status = request.http().reply.status, fields = fields[..<count], body_kind = net.HttpBodyKind.empty if no_body else net.HttpBodyKind.fixed,
         body_length = length, keep_alive = keep_alive))
     try io.write_all(destination, encoded)
-    if request.head.method == "HEAD" or no_body:
+    if request.http().head.method == "HEAD" or no_body:
         return
     var writer = try net.HttpBodyWriter.over(destination, net.HttpBodyKind.fixed, length)
-    if request.response_is_file:
+    if request.http().reply.is_file:
         var block: u8[32768]
         var remaining = length
         while remaining > 0:
             let amount = (usize)remaining if remaining < (u64)block.length else block.length
-            let read = try request.response_file.read(block[..<amount])
+            let read = try request.http().reply.file.read(block[..<amount])
             if read == 0:
                 error(io.unexpected_eof, "response file was truncated during transfer")
             discard(try writer.write(block[..<read]))
             remaining -= (u64)read
     else:
-        discard(try writer.write(request.response.view()))
+        discard(try writer.write(request.http().reply.bytes.view()))
     try writer.finish()
+
+pub func field(request: model.Exchange*, name: str, value: str) -> !:
+    try response_data.field(&request.http().reply, name, value)
+
+pub func content(request: model.Exchange*, status: i64, content_type: str, data: const u8[]) -> !:
+    try response_data.content(&request.http().reply, status, content_type, data)

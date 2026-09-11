@@ -1,0 +1,72 @@
+## Construction and partial startup leave no listener, worker or callback owners.
+import http
+import interop
+import ownership
+
+var factories: @u64
+
+func failure(code: ErrorCode, text: str) -> interop.Outcome[http.Application]:
+    let owned = interop.copy_text(text) catch problem: trap(problem.message)
+    return interop.Outcome[http.Application].failure(code, owned)
+
+func reject(data: str) -> interop.Outcome[http.Application]:
+    return failure(http.invalid_request, data)
+
+func routes(data: str) -> interop.Outcome[http.Application]:
+    var router = http.Router() catch problem: return failure(problem.code, problem.message)
+    defer router.close()
+    if data == "mismatch" and factories.add(1, .acq_rel) == 0:
+        let native = new http.StaticRoot(".") catch problem: return failure(problem.code, problem.message)
+        let root = interop.Reference[http.StaticRoot].adopt(native, interop.Type[http.StaticRoot]("test root", http.StaticRoot.close)) catch problem: return failure(problem.code, problem.message)
+        defer root.release()
+        router.mount("/", root) catch problem: return failure(problem.code, problem.message)
+    let application = router.application() catch problem: return failure(problem.code, problem.message)
+    return interop.Outcome[http.Application].success(interop.Owned[http.Application](application, application.owner))
+
+func exercise() -> !:
+    let factory = interop.WorkerEntry[str, unit, unit].native(reject)
+    var refused = false
+    let invalid: http.Server? = http.Server(http.ServerConfig(port = -1), factory) catch problem:
+        assert(problem.code == http.invalid_request)
+        refused = true
+        recover none
+    assert(refused and invalid == none)
+    for index in 0..<3:
+        let mark = ownership.mark()
+        defer ownership.drain(mark)
+        var server = try http.Server(http.ServerConfig(port = 0), factory, "dynamic startup rejection")
+        defer server.close()
+        refused = false
+        server.start() catch problem:
+            assert(problem.code == http.invalid_request and problem.message == "dynamic startup rejection")
+            refused = true
+        assert(refused and server.statistics().active_connections == 0)
+        server.close()
+        server.close()
+    let mark = ownership.mark()
+    defer ownership.drain(mark)
+    var mismatch = try http.Server(http.ServerConfig(port = 0), interop.WorkerEntry[str, unit, unit].native(routes), "mismatch")
+    defer mismatch.close()
+    refused = false
+    mismatch.start() catch problem:
+        assert(problem.code == http.invalid_state)
+        refused = true
+    assert(refused)
+    var server = try http.Server(http.ServerConfig(port = 0), interop.WorkerEntry[str, unit, unit].native(routes))
+    defer server.close()
+    try server.start()
+    assert((try server.port()) > 0)
+    server.shutdown()
+    try server.run()
+    assert(server.statistics().outstanding_requests == 0)
+    server.close()
+    refused = false
+    server.start() catch problem:
+        assert(problem.code == http.request_closed)
+        refused = true
+    assert(refused)
+
+pub func main(arguments: str[]) -> i32!:
+    discard(arguments)
+    try exercise()
+    return ownership.finish_run(0)

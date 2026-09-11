@@ -1,0 +1,78 @@
+## An owned received body. Storage remains bounded in memory and may own a
+## temporary file. Keeping a Body extends storage lifetime without keeping a request.
+
+import interop
+import io
+import luce_server.internal.body as storage_body
+import luce_server.internal.storage
+import strings
+import utf8
+
+pub struct Body:
+    var payload: storage_body.Body
+    var loaded: storage.Buffer
+    var position: usize
+
+    pub func size() -> i64:
+        return (i64)self.payload.length
+
+    pub mutating func bytes(limit: i64 = 1048576) -> const u8[]!:
+        if limit < 0 or limit > 67108864:
+            error(storage.invalid, "body memory limit must be between zero and 64 MiB")
+        self.loaded.maximum = (usize)limit
+        return try self.payload.load(&self.loaded)
+
+    pub mutating func text(limit: i64 = 1048576) -> str!:
+        let data = try self.bytes(limit)
+        var decoder: utf8.Decoder
+        for byte in data:
+            discard(try decoder.push(byte))
+        try decoder.finish()
+        return (str)data
+
+    ## Read successive chunks. The returned view expires on the next body read;
+    ## Luce copies it. Each call bounds memory independently of the body's size.
+    pub mutating func read(maximum: i64 = 32768) -> const u8[]!:
+        if maximum < 1 or maximum > 1048576:
+            error(storage.invalid, "body chunk size must be between 1 and 1 MiB")
+        self.loaded.clear()
+        self.loaded.maximum = (usize)maximum
+        let remaining = self.payload.length - self.position
+        let amount = remaining if remaining < (usize)maximum else (usize)maximum
+        if amount == 0:
+            return self.loaded.view()
+        if not self.payload.spilled:
+            let start = self.position
+            self.position += amount
+            return self.payload.bytes.view()[start..<self.position]
+        discard(try self.payload.temporary.seek((i64)self.position))
+        var block: u8[32768]
+        while self.loaded.used < amount:
+            let left = amount - self.loaded.used
+            let count = try self.payload.temporary.read(block[..<(left if left < block.length else block.length)])
+            if count == 0:
+                error(io.unexpected_eof, "spooled request body was truncated")
+            try self.loaded.append(block[..<count])
+        self.position += amount
+        return self.loaded.view()
+
+    pub mutating func rewind():
+        self.position = 0
+
+    pub mutating func save(destination: str, replace: bool = false) -> !:
+        if destination.length == 0 or strings.contains(destination, "\0"):
+            error(storage.invalid, "invalid upload destination")
+        try self.payload.save(destination, replace)
+
+    pub mutating func close():
+        self.payload.destroy()
+        self.loaded.destroy()
+
+pub let body_type: interop.Type[Body] = interop.Type[Body]("Body", Body.close, closeable = true)
+
+pub func take(payload: storage_body.Body*) -> interop.Reference[Body]!:
+    var reservation = try interop.Reservation[Body](body_type)
+    errdefer reservation.cancel()
+    let native = try new Body(*payload, storage.Buffer(), 0)
+    *payload = storage_body.Body(bytes = storage.Buffer())
+    return reservation.publish(native)

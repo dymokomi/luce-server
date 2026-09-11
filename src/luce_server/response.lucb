@@ -1,0 +1,70 @@
+## A response owns body bytes, headers and an optional opened regular file.
+## Returning it does not write to a socket; dispatch commits it exactly once.
+
+import interop
+import json
+import luce_server.internal.response_data
+import luce_server.internal.static_files
+import luce_server.internal.storage
+
+pub struct Response:
+    var data: response_data.Data
+    var committed: bool
+
+    pub func init(text: str = "", status: i64 = 200) -> !:
+        self.data = response_data.Data(bytes = storage.Buffer())
+        self.committed = false
+        errdefer self.data.close()
+        try response_data.content(&self.data, status, "text/plain; charset=utf-8", text.bytes)
+
+    pub static func bytes(value: const u8[], content_type: str = "application/octet-stream", status: i64 = 200) -> interop.Reference[Response]!:
+        let native = try new Response()
+        response_data.content(&native.data, status, content_type, value) catch failure:
+            native.close()
+            free(native)
+            error(failure.code, failure.message)
+        return try interop.Reference[Response].adopt(native, response_type)
+
+    pub static func json(value: interop.Reference[json.Value], status: i64 = 200) -> interop.Reference[Response]!:
+        return try Response.bytes((try value.get()).encode().bytes, "application/json", status)
+
+    pub static func file(path: str) -> interop.Reference[Response]!:
+        let native = try new Response()
+        response_data.file(&native.data, path, static_files.media_type(path)) catch failure:
+            native.close()
+            free(native)
+            error(failure.code, failure.message)
+        return try interop.Reference[Response].adopt(native, response_type)
+
+    pub mutating func header(name: str, value: str) -> !:
+        try self.editable()
+        try response_data.field(&self.data, name, value)
+
+    pub mutating func shutdown_after() -> !:
+        try self.editable()
+        self.data.stop_after = true
+
+    pub mutating func close_connection() -> !:
+        try self.editable()
+        self.data.close_after = true
+
+    func editable() -> !:
+        if self.committed:
+            error(storage.closed, "response was already committed")
+
+    pub mutating func close():
+        self.data.close()
+        self.committed = true
+
+pub let response_type: interop.Type[Response] = interop.Type[Response]("Response", Response.close, closeable = true)
+
+## Internal commit entry: the public http module exports only the Response type.
+pub func transfer(source: interop.Reference[Response], maximum: usize) -> response_data.Data!:
+    let native = try source.get()
+    try native.editable()
+    if native.data.bytes.used > maximum:
+        error(storage.limit, "response exceeds the server byte limit")
+    let result = native.data
+    native.data = response_data.Data(bytes = storage.Buffer())
+    native.committed = true
+    return result

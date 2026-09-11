@@ -27,9 +27,9 @@ func test_paths() -> !:
 func test_routes() -> !:
     var table: routes.Table
     defer table.destroy()
-    discard(try table.add("GET", "/items/{id}", 1))
-    discard(try table.add("GET", "/items/recent", 2))
-    discard(try table.add("POST", "/items", 3))
+    discard(try table.add("GET", "/items/{id}"))
+    discard(try table.add("GET", "/items/recent"))
+    discard(try table.add("POST", "/items"))
     assert(table.find("GET", "/items/recent") == 1)
     assert(table.find("HEAD", "/items/8") == 0)
     assert(table.find("DELETE", "/items/8") == none)

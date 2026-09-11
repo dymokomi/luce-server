@@ -1,7 +1,8 @@
 ## Heap ownership shared by network and application threads. Every allocation
 ## names memory.heap explicitly; no result depends on a caller's scoped arena.
-import memory
+
 import io
+import memory
 
 pub let invalid: ErrorCode = ErrorCode.package(1)
 pub let limit: ErrorCode = ErrorCode.package(2)
@@ -9,12 +10,16 @@ pub let closed: ErrorCode = ErrorCode.package(3)
 pub let conflict: ErrorCode = ErrorCode.package(4)
 
 pub func copy(text: str) -> str!:
+    if text.length == 0:
+        return ""
     let room = try alloc u8[text.length + 1] in memory.heap
     memory.copy(room, text.bytes, text.length)
     room[text.length] = 0
     return (str)room[..<text.length]
 
 pub func release(text: str):
+    if text.length == 0:
+        return
     free(u8[]((u8*)text.bytes.data, text.length + 1)) in memory.heap
 
 ## A bounded growable byte buffer. A view expires on append, clear or destroy.

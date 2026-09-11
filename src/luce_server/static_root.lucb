@@ -1,0 +1,26 @@
+## An opened static root. Mounting duplicates the descriptor, so later renames
+## preserve the selected directory and closing a declaration cannot break a mount.
+
+import c
+import files
+import interop
+import luce_server.internal.storage
+import strings
+
+pub struct StaticRoot:
+    var directory: files.Directory
+
+    pub func init(path: str) -> !:
+        if path.length == 0 or strings.contains(path, "\0"):
+            error(storage.invalid, "invalid static directory")
+        let owned = try storage.copy(path)
+        defer storage.release(owned)
+        self.directory = try files.Directory.open((c.str)owned, false)
+
+    pub mutating func close():
+        self.directory.destroy()
+
+pub let root_type: interop.Type[StaticRoot] = interop.Type[StaticRoot]("StaticRoot", StaticRoot.close, closeable = true)
+
+pub func duplicate(root: interop.Reference[StaticRoot]) -> files.Directory!:
+    return try (try root.get()).directory.open_directory(".", false)

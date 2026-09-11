@@ -1,0 +1,45 @@
+import http
+import interop
+import ownership
+import json
+
+struct Handlers:
+    var count: i64
+
+    mutating func ping(value: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
+        discard(value)
+        self.count += 1
+        let result = http.Response.bytes(b"pong", "text/plain; charset=utf-8") catch failure: trap(failure.message)
+        return interop.Outcome[interop.Reference[http.Response]].success(interop.Owned[interop.Reference[http.Response]](result, &result.owner.header))
+
+    mutating func close():
+        discard(0)
+
+let handlers_type = interop.Type[Handlers]("test handlers", Handlers.close)
+
+func factory(data: str) -> interop.Outcome[http.Application]:
+    discard(data)
+    let native = new Handlers() catch failure: trap(failure.message)
+    let handlers = interop.Reference[Handlers].adopt(native, handlers_type) catch failure: trap(failure.message)
+    defer handlers.release()
+    var router = http.Router() catch failure: trap(failure.message)
+    defer router.close()
+    let callback = http.Handler.bind_mutating(handlers, Handlers.ping) catch failure: trap(failure.message)
+    defer callback.release()
+    router.get("/ping", callback) catch failure: trap(failure.message)
+    let application = router.application() catch failure: trap(failure.message)
+    return interop.Outcome[http.Application].success(interop.Owned[http.Application](application, application.owner))
+
+func exercise() -> !:
+    var server = try http.Server(http.ServerConfig(port = 0), interop.WorkerEntry[str, unit, unit].native(factory))
+    defer server.close()
+    try server.shutdown_on_signals()
+    try server.start()
+    print(f"READY {try server.port()}")
+    try server.run()
+    print("STOPPED")
+
+pub func main(arguments: str[]) -> i32!:
+    discard(arguments)
+    try exercise()
+    return ownership.finish_run(0)

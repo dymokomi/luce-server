@@ -1,170 +1,102 @@
-# Public API and contracts
+# Server API
 
-Import `luce_server.http`. Base may additionally use the convenience modules
-`luce_server.websocket` and `luce_server.socket`. All implementation is Base;
-Python and shell are used only for builds and independent tests.
+`http`, `websocket` and `socket` are public module exports. All implementations
+are Base structs. Luce constructs them with `Type(...)`, owns them through ARC and
+calls their methods. Base callers explicitly close direct objects and release
+owning `interop.Reference`/callback carriers. Copies of Base carriers borrow.
 
-## Configuration and lifetime
+## Server and configuration
 
-`defaults() -> Options` returns mutable configuration. `open(options) -> Server!`
-binds the listener, validates limits, and retains owned copies of strings.
-Register routes and mounts before `start(server)`. Reconfiguration and a second
-start fail. Port zero requests an OS-assigned port; `port(server)` returns it.
-The address is numeric IPv4/IPv6; name resolution is the application's choice.
+`ServerConfig` contains address/port, network/application worker counts, backlog,
+request/idle/response/application/shutdown deadlines, body/memory/response limits,
+requests per connection and temporary directory. Durations are milliseconds and
+sizes are bytes. The address is numeric IPv4/IPv6; port zero selects a free port.
+Defaults are 8 network workers, 2 application workers, a 64 MiB body limit, a
+64 KiB memory body threshold and a 1 MiB response limit. Validation occurs before
+resource acquisition.
 
-| Option | Default | Meaning |
-| --- | --- | --- |
-| address / port | 127.0.0.1 / 8080 | Listener endpoint |
-| network_threads | 8 | Fixed connection workers, allowed 1–64 |
-| backlog | 128 | OS listener backlog |
-| request_timeout_ms | 30000 | Complete HTTP request or WebSocket message |
-| idle_timeout_ms | 5000 | Wait for the next request/message/chunk |
-| response_timeout_ms | 30000 | Complete outbound response |
-| application_timeout_ms | 30000 | Queue plus handler reply wait |
-| shutdown_timeout_ms | 5000 | Drain before canceling remaining connections |
-| body_limit | 64 MiB | Complete request/message size, at most 1 GiB |
-| memory_body_limit | 64 KiB | Spill threshold, at most body_limit |
-| response_limit | 1 MiB | Buffered response size, at most 64 MiB |
-| requests_per_connection | 100 | HTTP keep-alive request cap |
-| temporary_directory | /tmp | Existing directory for spooled bodies |
+`Server(config, factory, application_data = "")` copies configuration. The named
+factory receives a copied string on each worker and returns `Application`, the
+retained callable returned by `Router.application()`. It can capture state created
+on that worker. Route declarations must agree across workers, including mounted
+static-root identity. A mismatch fails startup and joins every started worker.
 
-All deadlines use monotonic time. Timeouts must be 1–3,600,000 milliseconds.
-Route/mount registration is capped at 128 entries; headers and connection input
-have fixed bounds. The queue has 64 entries and retained requests are capped at
-four times `network_threads`. Connections beyond the network pool wait in the
-OS backlog. Pool sizes are explicit capacity choices, not unlimited concurrency.
-
-`worker_token(server) -> i64!` is an opaque registration token, available after
-start. Each application thread calls `attach(token) -> Worker!` for its own
-handle, then `next(worker) -> Request?`. None means shutdown. A token can cross
-Luce task boundaries; a handle must stay on its owning application thread.
-Closing the server revokes its token. The token cannot be used as a pointer.
-
-`Server`, `Worker`, and `Request` own references. Base must close each exactly
-once. Do not use a closed handle or concurrently call methods on a single
-application handle. Closing an unanswered request abandons it, waking its
-connection with 503. A queued or running handler that misses its deadline also
-produces 503; a later reply fails with `request_closed`. Application code cannot
-be forcibly stopped, so callers must arrange for their own handlers to return.
-
-The server retains shared state until the last outstanding worker/request is
-released. `close_server` cancels and joins network threads; it does not destroy
-an application-owned handle behind its owner's back. Base borrowed strings and
-bytes remain valid until their documented mutation or request destruction.
-Luce's interop wrappers copy them into ARC values.
-
-## Routing and requests
-
-`route(server, method, pattern, id)` registers an uppercase method and origin-form
-path. Patterns have literal segments or whole-segment `{name}` parameters. A
-literal route wins over a parameter route for the same method; remaining ties
-use registration order. Explicit HEAD routes precede GET fallback. Trailing
-slashes are significant. Wildcards and regex routing are not implemented.
-
-An API path owns automatic OPTIONS/405 behavior even beneath a static mount.
-Unknown paths return 404. Protocol/path errors return 400, oversized bodies 413,
-request timeouts 408, and unavailable/expired application dispatch 503.
-
-| Function | Result / behavior |
+| Method | Behavior |
 | --- | --- |
-| route_id(request) | Application's registered integer ID |
-| method / path | Method and decoded path |
-| parameter(request, name) | Optional decoded route segment |
-| query(request, name) | First matching decoded query value; fallible |
-| header(request, name) | First field, UTF-8 validated; optional and fallible |
-| header_bytes(request, name) | First raw field bytes; optional |
-| body_size(request) | Received byte count |
-| body_bytes(request, limit) | Explicit bounded in-memory view |
-| body_text(request, limit) | Same, with UTF-8 validation |
-| save_body(request, destination, replace) | Atomic publication of the received body |
+| `mount(prefix, StaticRoot)` | Register an owned static directory before startup |
+| `shutdown_on_signals()` | Opt into process SIGINT/SIGTERM before startup |
+| `start()` | Bind and start both bounded pools; return only when factories are ready |
+| `port()` | Query the assigned listener port |
+| `run()` | Start if necessary, then wait for shutdown and join |
+| `shutdown()` | Stop accepting and begin a bounded graceful drain |
+| `statistics()` | Read connection, active, completed HTTP, error and outstanding-work counters |
+| `close()` | Cancel/join and release resources; terminal and idempotent |
 
-Malformed percent escapes, controls, invalid UTF-8, dot segments, repeated path
-separators, and encoded path separators are rejected. A query view expires on the
-next query call; a body view expires on the next body read. Missing names return
-none. These accessors are for HTTP and WebSocket events; raw TCP has only body
-accessors. Bodies are completely received before dispatch, spilling to disk
-above the configured memory threshold. This is bounded streaming storage, not
-an application callback for each incoming HTTP chunk.
+Signal handlers are restored after the last subscribing server closes. Shutdown
+cancels blocked IO after the configured drain deadline. A WebSocket close permits
+an additional bounded one-second peer acknowledgement. Application code must
+return from CPU work cooperatively; arbitrary user code is not forcibly killed.
 
-## Replies and files
+## Routing and responses
 
-Set optional `response_header(request, name, value)` fields before committing a
-reply. The server owns framing, connection, Date and Content-Type fields. Header
-names/values are validated and the total field count/size is bounded.
+`Router()` owns worker-local handlers. `add(Route(method, pattern, handler))`
+registers any uppercase method; `get`, `post` and `put` are conveniences.
+`websocket(pattern, handler)` registers a session opening. `socket(handler)` selects
+one TCP stream handler, mutually exclusive with HTTP routes. `mount(prefix, root)`
+registers a worker-local static declaration. `application()` freezes the router and
+returns its retained dispatch callable. Main-thread `Server.mount` is convenient
+for shared static roots. API routes take precedence over broad static mounts.
 
-- `reply(request, status, content_type, bytes)` copies a bounded response.
-- `text(request, status, value)` selects UTF-8 plain text.
-- `json(request, status, value)` selects JSON; the caller supplies serialized JSON.
-- `reply_file(request, filename)` streams an opened regular file with its MIME type.
+Patterns match decoded path segments; `{name}` captures one segment. Literal routes
+outrank parameter routes. GET supports HEAD fallback; registered paths receive
+OPTIONS/Allow and method-not-allowed replies when appropriate.
 
-Exactly one successful reply commits an event. HTTP HEAD omits body bytes while
-retaining the representation length; 204/304 suppress bodies. Files are streamed
-in fixed blocks and a truncated/unreadable file closes the connection rather
-than appending a second HTTP response. File paths passed by an application are
-its policy; they are not automatically confined to a mount.
+HTTP handlers return `Response`. Construction accepts text and status (default
+200). Static constructors `bytes`, `json` and `file` select body representation.
+`json` accepts a standard `json.Value`, never an unchecked JSON fragment. Methods
+`header`, `shutdown_after` and `close_connection` edit the uncommitted response.
+Framing headers are owned by the server. A response commits once; reuse or later
+mutation fails. A handler failure becomes a 500 response. Application deadlines
+expire requests and produce 503; a late returned response is discarded safely.
 
-`save_body` writes a temporary sibling, then publishes the complete file. With
-`replace = false`, an existing destination fails without overwriting it. This
-provides atomic visibility, not a promise of crash durability. Public error
-aliases are `invalid_request`, `limit_exceeded`, `request_closed`, `invalid_state`,
-`file_missing`, and `file_exists`; other standard I/O failures propagate.
+`Request` is a checked view. `method`, `path`, `header`/`header_bytes`, `parameter`,
+`integer_parameter`, `query` and `integer_query` provide typed access. Header text
+and decoded query text validate UTF-8. Returned native text views are borrowed;
+Luce copies them. Calling an escaped request or bound method after its handler
+returns fails before accessing its storage.
 
-`static_files(server, prefix, directory)` keeps the root directory open. Every
-path component is opened relative to that root without following symlinks;
-only regular files are served. Mount identity survives renaming the root.
-Directories requested with a trailing slash use `index.html`; there is no
-listing or general directory redirect. Mount prefixes select the longest match.
-Files support GET/HEAD, weak metadata ETags, If-None-Match, If-Match existence
-checks, and single byte ranges. Multiple ranges are ignored. Weak validators
-cannot satisfy If-Range, so such requests receive the complete representation.
-Last-Modified/If-Modified-Since and multipart ranges are not implemented.
+`request.body()` returns an owned `Body` independent of the request. `size` reports
+bytes; `bytes(limit)`/`text(limit)` perform explicit bounded loads. `read(maximum)`
+reads successive chunks (default 32 KiB), and `rewind` resets that cursor. Native
+read views last until the next read/mutation; Luce copies them. `save(path,
+replace = false)` publishes through a temporary sibling after the full copy.
+Bodies over the memory threshold own temporary files, deleted on release. Paths
+are application policy; decoded route parameters are not interpreted as paths by
+the library. `Response.file` opens and retains a regular file for bounded transfer.
 
-## WebSocket and TCP
+`StaticRoot(path)` owns an opened root. Mounts duplicate its descriptor, so closing
+a declaration or renaming the root does not invalidate mounted content. Serving
+uses relative directory descriptors and regular-file checks. It supports index.html,
+HEAD, weak ETags, one byte range and relevant preconditions. No directory listing
+is generated.
 
-`websocket_route(server, pattern, id)` registers an HTTP upgrade endpoint. Its
-first event satisfies `is_websocket_open`. Inspect headers and either send an
-HTTP rejection or call `accept_websocket(request, protocol)`. The selected
-subprotocol must have been offered; the empty string selects none. Origin and
-identity policy belong to the application.
+## Sessions
 
-Subsequent events contain complete text/binary messages; `is_text_message`
-distinguishes them. `send_message` replies with the same message kind, validating
-outgoing text. Base's `websocket.route/accept/send` are convenience wrappers.
-Fragments and control frames are handled by Base; interleaved ping/pong does not
-reset the complete-message deadline. A server-initiated close waits at most one
-second for its peer. Messages are dispatched serially within a connection;
-there is no unsolicited push/broadcast API in this version. A busy application
-handler delays further reads (including ping) until it answers or times out.
+`websocket.Session` is a checked handler-scope view. `header` inspects the opening.
+`accept(protocol = "")` validates the handshake and optional offered subprotocol;
+`reject(Response)` answers before upgrading. The application decides Origin and
+identity policy. `receive()` returns an owned `Message` or none after closure.
+Messages expose `is_text`, `body`, `bytes` and `text`. `send(message)`, `send_text`
+and `send_bytes` support replies and server-initiated traffic. Fragmentation,
+masking checks, ping/pong, UTF-8 validation and protocol-close codes are internal.
+`close(code = 1000)` performs a bounded close handshake. Returning without accepting
+rejects the opening. Owned messages may outlive the scoped session.
 
-`socket.open(options)` creates a raw TCP listener using the same worker model.
-Each request contains one read chunk of at most 16 KiB. `socket.send` sends the
-reply bytes. Chunk boundaries are arbitrary: applications own record framing.
+`socket.Session` exposes `read(maximum = 16384)`, `write(bytes)`, `close` and
+`shutdown_server`. Read boundaries have no message meaning; an empty read denotes
+EOF. A session may write before reading. Socket/session operations stay on their
+application runtime thread and use native cancellation/deadline primitives.
 
-## Shutdown and observation
-
-`shutdown(server)` begins a bounded drain: stop accepting new connections,
-finish current replies, then cancel survivors. `shutdown_after_reply(request)`
-and `close_after_reply(request)` set policies before committing that reply.
-`close_server` performs immediate cancellation/join and final ownership release.
-Closing HTTP/TCP peers and closing WebSockets unblock connection workers.
-
-`shutdown_on_signals(server)` opts into process-wide SIGINT/SIGTERM handlers;
-register it before start. The handlers only advance an atomic generation counter;
-the server's clock thread starts the drain. Previous handlers are restored when
-the last subscribing server closes. Do not independently replace these handlers
-while subscribers are active. A bounded close handshake may add up to one second
-to a WebSocket worker's final cleanup.
-
-`statistics(server)` returns observational counters for connections, active
-connections, completed application/static requests, failures, and outstanding
-requests. These independently sampled counters are not a transactional snapshot
-or a complete HTTP access log.
-
-## Temporary source packaging convention
-
-Until dependency installation introduces independent package identities, staged
-Base sources belong to the consumer's compilation package. The server currently
-uses package error numbers 1–4; consumer-defined `ErrorCode.package` constants
-must use other numbers. Prefer the public error aliases when translating server
-failures. This source-staging convention is explicit in the build tools and will
-be replaced by package-manager integration.
+HTTP bodies, responses and message snapshots can be retained on their runtime
+thread. Request/session views cannot extend validity by being retained. No callback
+or ARC owner crosses a worker boundary.

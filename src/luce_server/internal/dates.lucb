@@ -1,7 +1,8 @@
 ## IMF-fixdate formatting uses UTC arithmetic, independent of locale and shared
 ## C-library calendar buffers. The server needs only years 1970 through 9999.
-import memory
+
 import luce_server.internal.storage
+import memory
 
 func pair(output: u8[], at: usize, value: u64):
     output[at] = '0' + (u8)(value // 10)

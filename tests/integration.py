@@ -127,11 +127,11 @@ class Server:
         finally:
             client.close()
 
-    def websocket(self):
+    def websocket(self, path="/ws"):
         peer = self.connect()
         stream = peer.makefile("rb")
         key = base64.b64encode(os.urandom(16))
-        peer.sendall(b"GET /ws HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\n"
+        peer.sendall(b"GET " + path.encode() + b" HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\n"
                      b"Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n"
                      b"Sec-WebSocket-Key: " + key + b"\r\n\r\n")
         status, fields, body = response(stream)
@@ -251,7 +251,7 @@ def http_tests(binary, directory):
         assert server.request("PUT", "/upload/payload.bin", b"replacement")[0] == 500
         assert (uploads / "payload.bin").read_bytes() == payload
         eventually(lambda: not list(uploads.glob(".luce-*")))
-        assert server.request("POST", "/abandon", b"")[0] == 503
+        assert server.request("POST", "/failure", b"")[0] == 500
         assert server.request("GET", "/slow")[0] == 503
         time.sleep(0.55)  # allow the deliberately late application handler to exit
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -261,6 +261,11 @@ def http_tests(binary, directory):
             results = list(executor.map(lambda _: server.request("GET", "/ping"), range(80)))
         assert all(status == 200 and body == b'{"ok":true}' for status, _, body in results)
 
+        peer, stream = server.websocket("/ws/greeting")
+        with peer, stream:
+            assert read_frame(stream) == (1, b"hello before input")
+            peer.sendall(frame(8, struct.pack("!H", 1000)))
+            assert read_frame(stream) == (8, struct.pack("!H", 1000))
         peer, stream = server.websocket()
         with peer, stream:
             peer.sendall(frame(1, b"close"))
@@ -335,9 +340,9 @@ def signal_tests(binary, directory):
 def lifetime_tests(binary, directory):
     server = Server(binary, directory, directory, mode="lifetime")
     try:
-        with server.connect() as peer:
-            peer.sendall(b"retained payload")
-            assert peer.recv(1) == b""
+        assert server.request("POST", "/retain", b"retained payload")[2] == b"retained"
+        assert server.request("POST", "/shutdown", b"")[2] == b"bye"
+        # The fixture checks expiry and retained body contents during worker disposal.
         server.finish()
         assert not list(directory.glob(".luce-*"))
     finally:

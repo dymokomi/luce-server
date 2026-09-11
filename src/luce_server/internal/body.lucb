@@ -1,11 +1,12 @@
 ## Bodies stay in bounded memory until the threshold, then spill to an owned
 ## temporary file. Network input is streamed; file size is never an allocation.
+
 import c
 import files
 import io
+import luce_server.internal.storage
 import memory
 import paths
-import luce_server.internal.storage
 
 pub struct Body:
     pub var bytes: storage.Buffer

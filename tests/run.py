@@ -24,8 +24,11 @@ if __name__ == "__main__":
     for level in arguments.opt if arguments.opt is not None else range(4):
         unit = ROOT / "build" / f"unit-{level}"
         server = ROOT / "build" / f"server-{level}"
+        lifecycle = ROOT / "build" / f"lifecycle-{level}"
         build(ROOT / "tests/unit.lucb", unit, arguments.base, level)
         checked([unit])
+        build(ROOT / "tests/lifecycle.lucb", lifecycle, arguments.base, level)
+        checked([lifecycle])
         build(ROOT / "tests/server.lucb", server, arguments.base, level)
         checked([sys.executable, ROOT / "tests/integration.py", server])
         print(f"PASS native opt {level}", flush=True)

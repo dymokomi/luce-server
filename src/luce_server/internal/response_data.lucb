@@ -1,0 +1,90 @@
+## Neutral response storage. Builders own it until a single dispatch commit moves
+## it to the network thread. It contains no ARC owners or borrowed application data.
+
+import c
+import files
+import io
+import luce_server.internal.storage
+import net
+import paths
+import strings
+
+pub struct Data:
+    pub var bytes: storage.Buffer
+    pub var content_type: storage.Buffer = storage.Buffer(maximum = 256)
+    pub var headers: storage.Buffer = storage.Buffer(maximum = 8192)
+    pub var field_count: usize
+    pub var file: files.File
+    pub var file_length: u64
+    pub var status: u16 = 200
+    pub var is_file: bool
+    pub var stop_after: bool
+    pub var close_after: bool
+
+    pub mutating func close():
+        self.bytes.destroy()
+        self.content_type.destroy()
+        self.headers.destroy()
+        self.file.destroy()
+
+pub func field(data: Data*, name: str, value: str) -> !:
+    if data.field_count >= 96:
+        error(storage.limit, "too many application response fields")
+    if name.length == 0:
+        error(storage.invalid, "a response field needs a name")
+    for byte in name.bytes:
+        var valid = (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9')
+        for allowed in "!#$%&'*+-.^_`|~".bytes:
+            if byte == allowed:
+                valid = true
+        if not valid:
+            error(storage.invalid, "invalid response field name")
+    for byte in value.bytes:
+        if byte == 127 or (byte < 32 and byte != '\t'):
+            error(storage.invalid, "invalid response field value")
+    if net.http_equal(name, "content-length") or net.http_equal(name, "transfer-encoding") or net.http_equal(name, "connection") or net.http_equal(name, "content-type") or net.http_equal(name, "date"):
+        error(storage.invalid, "the server owns response framing and content type")
+    var line: u8[8192]
+    var writer = io.SliceWriter.over(line)
+    try io.write_all(&writer, name.bytes)
+    try io.write_all(&writer, ": ".bytes)
+    try io.write_all(&writer, value.bytes)
+    try io.write_all(&writer, "\r\n".bytes)
+    try data.headers.append(writer.written())
+    data.field_count += 1
+
+pub func content(data: Data*, status: i64, content_type: str, payload: const u8[]) -> !:
+    if status < 200 or status > 599:
+        error(storage.invalid, "application response status must be between 200 and 599")
+    if (status == 204 or status == 304) and payload.length != 0:
+        error(storage.invalid, "this response status cannot carry a body")
+    for byte in content_type.bytes:
+        if byte < 32 or byte >= 127:
+            error(storage.invalid, "invalid response content type")
+    data.bytes.clear()
+    data.content_type.clear()
+    data.file.destroy()
+    data.is_file = false
+    try data.content_type.append(content_type.bytes)
+    try data.bytes.append(payload)
+    data.status = (u16)status
+
+pub func file(data: Data*, path: str, content_type: str) -> !:
+    if strings.contains(path, "\0"):
+        error(storage.invalid, "a file path contains NUL")
+    let parent = try storage.copy(paths.directory(path))
+    defer storage.release(parent)
+    let leaf = try storage.copy(paths.base(path))
+    defer storage.release(leaf)
+    var directory = try files.Directory.open((c.str)parent)
+    defer directory.destroy()
+    var opened = try directory.open_file((c.str)leaf, follow_symlinks = false, nonblocking = true)
+    errdefer opened.destroy()
+    let info = try opened.metadata()
+    if info.kind != files.FileKind.regular or info.size < 0:
+        error(storage.invalid, "a response file must be a regular file")
+    try content(data, 200, content_type, "".bytes)
+    data.file.destroy()
+    data.file = opened
+    data.file_length = (u64)info.size
+    data.is_file = true

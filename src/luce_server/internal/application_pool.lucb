@@ -1,0 +1,52 @@
+## The wrapper carries only neutral server state and an immutable factory entry.
+## A managed factory is entered on its new runtime thread by interop.Worker.
+
+import interop
+import luce_server.internal.model
+import luce_server.internal.storage
+
+pub type Application = interop.Callback[unit, unit]
+pub type Factory = interop.WorkerEntry[str, unit, unit]
+
+local var active_server: model.State*? = none
+local var first_application: bool = false
+local var registered_router: bool = false
+
+pub func server() -> model.State*!:
+    return active_server else error(storage.conflict, "routers run inside a server application factory")
+
+pub func first() -> bool:
+    return first_application
+
+pub func register_router() -> !:
+    if registered_router:
+        error(storage.conflict, "an application factory must publish exactly one router")
+    registered_router = true
+
+struct Bootstrap:
+    let state: model.State*
+    let factory: Factory
+    let first: bool
+
+    static func open(raw: void*?, data: str) -> interop.Outcome[Application]:
+        let context = (Bootstrap*)(raw else trap("server application has no bootstrap context"))
+        active_server = context.state
+        first_application = context.first
+        registered_router = false
+        let result = context.factory.open(context.factory.context, data)
+        if result.is_success() and not registered_router:
+            result.release()
+            return interop.Outcome[Application].failure(storage.conflict,
+                interop.Owned[str]("application factory did not publish a router"))
+        return result
+
+pub func start(state: model.State*, factory: Factory, data: str, count: usize) -> !:
+    for index in 0..<count:
+        # init waits for open to return, so this stack context cannot escape.
+        var context = Bootstrap(state, factory, index == 0)
+        let entry = Factory((void*)&context, Bootstrap.open, factory.enter, factory.leave)
+        state.lifecycle.applications[index] = try interop.Worker[str, unit, unit](entry, data,
+            interop.text_transfer, interop.Transfer[unit].plain(), interop.Transfer[unit].plain(), 1)
+        state.lifecycle.application_count += 1
+    for index in 0..<count:
+        try (state.lifecycle.applications[index] else trap("application worker is missing")).send(())
