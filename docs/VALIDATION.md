@@ -31,3 +31,7 @@ control escaping, snapshots, duplicate keys, malformed UTF-8, limits and ownersh
 The repository workflow runs the complete native matrix on ARM64 macOS and
 x86-64 Linux, using the pinned compiler. Local results above do not claim Linux
 host execution; the workflow result is recorded separately after the push.
+
+The section-seven delivery pass re-ran native optimization levels 0–3 against
+Base `51a02e5` (including the ARM64 aggregate argument fix). The independent
+HTTP, file, WebSocket, TCP, concurrency and shutdown suites all passed locally.
