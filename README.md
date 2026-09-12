@@ -14,11 +14,11 @@ from api import Api
 
 pub func configure(upload_directory: str) -> Application!:
     let api = Api(upload_directory)
-    let router = try Router()
-    try router.get("/api/health", api.health)
-    try router.put("/api/files/{name}", api.upload)
-    try router.websocket("/ws/echo", api.websocket_echo)
-    return try router.application()
+    let router = Router()
+    router.get("/api/health", api.health)
+    router.put("/api/files/{name}", api.upload)
+    router.websocket("/ws/echo", api.websocket_echo)
+    return router.application()
 ```
 
 The named factory constructs worker-local handlers. A main function constructs
