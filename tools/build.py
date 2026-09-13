@@ -33,7 +33,7 @@ if __name__ == "__main__":
     parser.add_argument("entry", type=Path)
     parser.add_argument("-o", "--output", type=Path, required=True)
     parser.add_argument("--base", type=Path, default=Path(os.environ.get(
-        "LUCE_BASE_COMPILER", ROOT.parent / "luce-base/build/luce-base")))
+        "LUCE_BASE_COMPILER", ROOT.parent / ("luce-base/build/luce-base.exe" if os.name == "nt" else "luce-base/build/luce-base"))))
     parser.add_argument("--opt", type=int, choices=range(4), default=0)
     arguments = parser.parse_args()
     build(arguments.entry, arguments.output, arguments.base, arguments.opt)

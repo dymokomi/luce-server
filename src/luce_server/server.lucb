@@ -3,6 +3,7 @@
 
 import c
 import files
+import io
 import interop
 from luce_server.config import ServerConfig, Statistics
 import luce_server.internal.application_pool
@@ -35,7 +36,7 @@ pub struct Server:
         errdefer storage.release(address)
         let data = try storage.copy(application_data)
         errdefer storage.release(data)
-        let temporary = try storage.copy(configuration.temporary_directory)
+        let temporary = try storage.copy(io.path.temp() if configuration.temporary_directory.length == 0 else configuration.temporary_directory)
         self.state = none
         self.address = address
         self.application_data = data

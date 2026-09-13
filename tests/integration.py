@@ -9,11 +9,49 @@ import http.client
 import os
 from pathlib import Path
 import select
+import queue
+import threading
+import signal
+import sys
 import socket
 import struct
 import subprocess
 import tempfile
 import time
+
+
+def startup_line(process):
+    if os.name != 'nt':
+        ready, _, _ = select.select([process.stdout], [], [], 15)
+        assert ready, 'application startup timed out'
+        return process.stdout.readline()
+    lines = queue.Queue()
+    threading.Thread(target=lambda: lines.put(process.stdout.readline()), daemon=True).start()
+    try:
+        return lines.get(timeout=15)
+    except queue.Empty:
+        raise AssertionError('application startup timed out') from None
+
+
+def request_shutdown(process_id):
+    if os.name != 'nt':
+        os.kill(process_id, signal.SIGTERM)
+        return
+    # The server owns a hidden console. A short-lived helper attaches to that
+    # console to deliver a real CTRL_BREAK event without signaling the test host.
+    helper = r"""
+import ctypes, sys, time
+kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+handler_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint32)
+handler = handler_type(lambda event: 1)
+kernel.FreeConsole()
+assert kernel.AttachConsole(int(sys.argv[1])), ctypes.get_last_error()
+assert kernel.SetConsoleCtrlHandler(handler, True), ctypes.get_last_error()
+assert kernel.GenerateConsoleCtrlEvent(1, 0), ctypes.get_last_error()
+time.sleep(.1)
+kernel.FreeConsole()
+"""
+    subprocess.run([sys.executable, '-c', helper, str(process_id)], check=True, timeout=5)
 
 
 def eventually(predicate, timeout=2):
@@ -105,13 +143,20 @@ def read_frame(stream):
 
 class Server:
     def __init__(self, binary, root, uploads, raw=False, mode=None):
+        launch = {}
+        if os.name == 'nt':
+            startup = subprocess.STARTUPINFO()
+            startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startup.wShowWindow = subprocess.SW_HIDE
+            launch = dict(creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=startup)
         self.process = subprocess.Popen([str(binary), str(root), str(uploads), mode or ("raw" if raw else "http")],
-                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        ready, _, _ = select.select([self.process.stdout], [], [], 10)
-        if not ready:
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, **launch)
+        try:
+            line = startup_line(self.process)
+        except BaseException:
             self.process.kill()
-            raise AssertionError(("server did not start", self.process.communicate()))
-        line = self.process.stdout.readline()
+            self.process.communicate()
+            raise
         assert line.startswith(b"READY "), (line, self.process.poll())
         self.port = int(line.split()[1])
 
@@ -161,7 +206,10 @@ def http_tests(binary, directory):
     (root / "nested/file.txt").write_bytes(b"nested")
     (root / "outside").symlink_to(uploads, target_is_directory=True)
     (root / "link.txt").symlink_to("data.txt")
-    os.mkfifo(root / "pipe")
+    if os.name != "nt":
+        os.mkfifo(root / "pipe")
+    else:
+        print("SKIP Unix FIFO entry: Windows has no filesystem FIFO nodes", flush=True)
     server = Server(binary, root, uploads)
     try:
         assert server.request("GET", "/ping")[2] == b'{"ok":true}'
@@ -329,7 +377,7 @@ def signal_tests(binary, directory):
         try:
             peer.sendall(b"hello")
             assert peer.recv(5) == b"hello"
-            server.process.terminate()
+            request_shutdown(server.process.pid)
             server.finish()
         finally:
             peer.close()

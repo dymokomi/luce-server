@@ -1,0 +1,48 @@
+name: Windows x64
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      CC: gcc
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: luce-server
+      - name: Read dependency pins
+        id: pins
+        shell: pwsh
+        run: |
+          "base=$(Get-Content luce-server/bootstrap/BASE)" >> $env:GITHUB_OUTPUT
+      - uses: actions/checkout@v7
+        with:
+          repository: dymokomi/luce-base
+          ref: ${{ steps.pins.outputs.base }}
+          path: luce-base
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-vulkan-devel
+      - name: Build Base
+        working-directory: luce-base
+        shell: msys2 {0}
+        run: python tools/build_windows.py
+      - name: Run Windows contracts
+        working-directory: luce-server
+        shell: msys2 {0}
+        run: python tests/run.py
+      - name: Retain diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: luce-server-windows-${{ github.sha }}
+          path: |
+            luce-server/build/*.log
+            luce-server/build/*results.json

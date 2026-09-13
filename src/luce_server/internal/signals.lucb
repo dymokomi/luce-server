@@ -4,9 +4,11 @@
 
 import luce_server.internal.storage
 import sync
+import platform
 
 type Handler = func(i32) -> unit
 extern func set_handler as "signal"(number: i32, handler: Handler?) -> Handler?
+extern func SetConsoleCtrlHandler(handler: func(u32) -> i32, add: i32) -> i32
 
 var lock: sync.Mutex
 var subscribers: usize
@@ -17,6 +19,12 @@ var generation: @u64
 func received(number: i32):
     discard(generation.add(1, .relaxed))
 
+func console_received(event: u32) -> i32:
+    if event == 0 or event == 1 or event == 2 or event == 5 or event == 6:
+        discard(generation.add(1, .relaxed))
+        return 1
+    return 0
+
 func refused(handler: Handler?) -> bool:
     if let function = handler:
         return (usize)(void*)function == 18446744073709551615
@@ -26,6 +34,11 @@ pub func subscribe() -> u64!:
     lock.lock()
     defer lock.unlock()
     if subscribers == 0:
+        if platform.windows:
+            if SetConsoleCtrlHandler(console_received, 1) == 0:
+                error(storage.invalid, "console shutdown handler could not be installed")
+            subscribers = 1
+            return generation.load(.acquire)
         previous_interrupt = set_handler(2, received)
         if refused(previous_interrupt):
             error(storage.invalid, "SIGINT handler could not be installed")
@@ -45,5 +58,8 @@ pub func unsubscribe():
     assert(subscribers > 0)
     subscribers -= 1
     if subscribers == 0:
+        if platform.windows:
+            discard(SetConsoleCtrlHandler(console_received, 0))
+            return
         discard(set_handler(2, previous_interrupt))
         discard(set_handler(15, previous_terminate))

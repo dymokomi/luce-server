@@ -18,7 +18,7 @@ def checked(command, timeout=120):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", type=Path, default=Path(os.environ.get(
-        "LUCE_BASE_COMPILER", ROOT.parent / "luce-base/build/luce-base")))
+        "LUCE_BASE_COMPILER", ROOT.parent / ("luce-base/build/luce-base.exe" if os.name == "nt" else "luce-base/build/luce-base"))))
     parser.add_argument("--opt", type=int, choices=range(4), action="append")
     arguments = parser.parse_args()
     for level in arguments.opt if arguments.opt is not None else range(4):

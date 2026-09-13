@@ -19,7 +19,8 @@ pub struct ServerConfig:
     pub var memory_body_limit: i64 = 65536
     pub var response_limit: i64 = 1048576
     pub var requests_per_connection: i64 = 100
-    pub var temporary_directory: str = "/tmp"
+    ## Empty selects the host temporary directory when the server is constructed.
+    pub var temporary_directory: str = ""
 
     pub func validate() -> !:
         discard(net.IpAddress.parse(self.address) else error(storage.invalid, "listen address must be numeric IPv4 or IPv6"))
@@ -32,7 +33,7 @@ pub struct ServerConfig:
         try timeout(self.response_timeout_ms)
         try timeout(self.application_timeout_ms)
         try timeout(self.shutdown_timeout_ms)
-        if self.temporary_directory.length == 0 or strings.contains(self.temporary_directory, "\0"):
+        if strings.contains(self.temporary_directory, "\0"):
             error(storage.invalid, "invalid temporary directory")
 
 func timeout(value: i64) -> !:

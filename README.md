@@ -66,3 +66,8 @@ python3 tests/heap.py build/server-0
 See [API](docs/API.md), [design](docs/DESIGN.md) and
 [validation evidence](docs/VALIDATION.md). TLS, HTTP/2, multipart parsing and
 database integration remain separate work. Licensed under MIT or Apache-2.0.
+
+## Windows x64
+
+Build sibling `luce-base` checkouts with `python tools/build_windows.py` in each compiler repository. Run `python tests/run.py` in this repository; the runner selects the sibling Windows executables.
+Windows shutdown uses console control events. The integration runner gives its server a private console and verifies graceful Ctrl+Break shutdown. Temporary storage defaults to the host temporary directory.
