@@ -1,6 +1,5 @@
 
 from luce_server.internal.model import State
-import luce_server.internal.signals
 import luce_server.internal.storage
 import memory
 import sync
@@ -38,8 +37,9 @@ pub func clock_worker(context: void*?):
     let state = (State*)(context else return)
     while not state.cancellation.is_requested():
         thread.sleep(10)
-        if state.lifecycle.watch_signals and signals.epoch() != state.lifecycle.signal_epoch:
-            begin_drain(state)
+        if let termination = state.lifecycle.termination:
+            if termination.requested():
+                begin_drain(state)
         if state.lifecycle.draining.load(.acquire):
             if state.counters.active.load(.acquire) == 0 or time.now() >= state.lifecycle.drain_until:
                 stop(state)

@@ -33,7 +33,7 @@ def startup_line(process):
         raise AssertionError('application startup timed out') from None
 
 
-def request_shutdown(process_id):
+def request_shutdown(process_id, console_close=False):
     if os.name != 'nt':
         os.kill(process_id, signal.SIGTERM)
         return
@@ -44,14 +44,24 @@ import ctypes, sys, time
 kernel = ctypes.WinDLL('kernel32', use_last_error=True)
 handler_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint32)
 handler = handler_type(lambda event: 1)
+kernel.GetConsoleWindow.restype = ctypes.c_void_p
 kernel.FreeConsole()
 assert kernel.AttachConsole(int(sys.argv[1])), ctypes.get_last_error()
 assert kernel.SetConsoleCtrlHandler(handler, True), ctypes.get_last_error()
+if sys.argv[2] == 'close':
+    window = kernel.GetConsoleWindow()
+    assert window, ctypes.get_last_error()
+    kernel.FreeConsole()
+    user = ctypes.WinDLL('user32', use_last_error=True)
+    user.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+    assert user.PostMessageW(window, 0x0010, 0, 0), ctypes.get_last_error()  # WM_CLOSE
+    raise SystemExit(0)
 assert kernel.GenerateConsoleCtrlEvent(1, 0), ctypes.get_last_error()
 time.sleep(.1)
 kernel.FreeConsole()
 """
-    subprocess.run([sys.executable, '-c', helper, str(process_id)], check=True, timeout=5)
+    subprocess.run([sys.executable, '-c', helper, str(process_id), 'close' if console_close else 'break'],
+                   check=True, timeout=5)
 
 
 def eventually(predicate, timeout=2):
@@ -184,9 +194,12 @@ class Server:
         assert status == 101 and fields[b"sec-websocket-accept"] == expected and not body
         return peer, stream
 
-    def finish(self):
+    def finish(self, console_close=False):
         output, errors = self.process.communicate(timeout=6)
-        assert self.process.returncode == 0 and not errors and output == b"STOPPED\n", (
+        # A close notification may let main return or let Windows terminate after
+        # acknowledgement. In either case every worker must finish before STOPPED.
+        allowed = (0, 0xC000013A) if console_close else (0,)
+        assert self.process.returncode in allowed and not errors and output == b"STOPPED\n", (
             self.process.returncode, output, errors)
 
     def cleanup(self):
@@ -370,15 +383,15 @@ def tcp_tests(binary, directory):
         server.cleanup()
 
 
-def signal_tests(binary, directory):
+def signal_tests(binary, directory, console_close=False):
     server = Server(binary, directory, directory, raw=True)
     try:
         peer = server.connect()
         try:
             peer.sendall(b"hello")
             assert peer.recv(5) == b"hello"
-            request_shutdown(server.process.pid)
-            server.finish()
+            request_shutdown(server.process.pid, console_close=console_close)
+            server.finish(console_close=console_close)
         finally:
             peer.close()
     finally:
@@ -406,5 +419,7 @@ if __name__ == "__main__":
         http_tests(arguments.binary.resolve(), directory)
         tcp_tests(arguments.binary.resolve(), directory)
         signal_tests(arguments.binary.resolve(), directory)
+        if os.name == 'nt':
+            signal_tests(arguments.binary.resolve(), directory, console_close=True)
         lifetime_tests(arguments.binary.resolve(), directory)
     print("PASS independent HTTP, file, WebSocket, TCP, concurrency and shutdown checks")

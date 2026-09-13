@@ -13,12 +13,12 @@ from luce_server.internal.model import Config, State
 import luce_server.internal.pool
 from luce_server.internal.routes import Kind, Table
 import luce_server.internal.shutdown
-import luce_server.internal.signals
 import luce_server.internal.storage
 import luce_server.static_root
 from luce_server.static_root import StaticRoot
 import memory
 import net
+import process
 import thread
 
 pub struct Server:
@@ -27,6 +27,7 @@ pub struct Server:
     var application_data: str
     var configuration: ServerConfig
     var factory: Factory
+    var termination: process.Termination?
     var watch_signals: bool
     var mounts: Table
 
@@ -45,6 +46,7 @@ pub struct Server:
         copied.temporary_directory = temporary
         self.configuration = copied
         self.factory = factory
+        self.termination = none
         self.watch_signals = false
         self.mounts = Table()
 
@@ -83,6 +85,7 @@ pub struct Server:
             error(failure.code, failure.message)
         state.references.store(1, .relaxed)
         errdefer lifecycle.release(state)
+        errdefer self.stop_watching()
         errdefer shutdown.join(state)
         var directory = try files.Directory.open((c.str)temporary)
         directory.destroy()
@@ -95,9 +98,9 @@ pub struct Server:
             let slot = try state.table.add("GET", mount.pattern, Kind.static_files)
             state.table.entries[slot].root = try mount.root.open_directory(".", false)
         if self.watch_signals:
-            state.lifecycle.signal_epoch = try signals.subscribe()
-            state.lifecycle.watch_signals = true
-        errdefer unsubscribe(state)
+            let termination = try process.Termination()
+            self.termination = termination
+            state.lifecycle.termination = termination.status()
         try pool.start(state)
         self.state = state
 
@@ -127,7 +130,6 @@ pub struct Server:
         if let state = self.state:
             self.state = none
             shutdown.join(state)
-            unsubscribe(state)
             lifecycle.release(state)
         self.mounts.destroy()
         storage.release(self.address)
@@ -136,10 +138,12 @@ pub struct Server:
         self.address = ""
         self.application_data = ""
         self.configuration.temporary_directory = ""
+        self.stop_watching()
 
-func unsubscribe(state: State*):
-    if state.lifecycle.watch_signals:
-        signals.unsubscribe()
-        state.lifecycle.watch_signals = false
+    ## Acknowledge native termination only after pools and resource owners close.
+    mutating func stop_watching():
+        var termination = self.termination else return
+        self.termination = none
+        termination.close()
 
 pub let server_type: interop.Type[Server] = interop.Type[Server]("Server", Server.close, closeable = true)

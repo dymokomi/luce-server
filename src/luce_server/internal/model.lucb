@@ -6,6 +6,7 @@ from luce_server.internal.response_data import Data
 from luce_server.internal.routes import Table
 from luce_server.internal.storage import Buffer
 import net
+import process
 import sync
 import thread
 
@@ -25,8 +26,7 @@ pub struct Config:
 pub struct Lifecycle:
     pub var draining: @bool
     pub var drain_until: u64
-    pub var watch_signals: bool
-    pub var signal_epoch: u64
+    pub var termination: process.TerminationStatus?
     pub var join_lock: sync.Mutex
     pub var started: @bool
     pub var joined: bool
