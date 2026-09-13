@@ -21,6 +21,8 @@ if __name__ == "__main__":
         "LUCE_BASE_COMPILER", ROOT.parent / ("luce-base/build/luce-base.exe" if os.name == "nt" else "luce-base/build/luce-base"))))
     parser.add_argument("--opt", type=int, choices=range(4), action="append")
     arguments = parser.parse_args()
+    if os.name != "nt":
+        checked([sys.executable, ROOT / "tests/process_ownership.py"])
     for level in arguments.opt if arguments.opt is not None else range(4):
         unit = ROOT / "build" / f"unit-{level}"
         server = ROOT / "build" / f"server-{level}"

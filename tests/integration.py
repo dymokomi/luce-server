@@ -153,7 +153,7 @@ def read_frame(stream):
 
 class Server:
     def __init__(self, binary, root, uploads, raw=False, mode=None):
-        launch = {}
+        launch = dict(start_new_session=True) if os.name != 'nt' else {}
         if os.name == 'nt':
             startup = subprocess.STARTUPINFO()
             startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -163,12 +163,11 @@ class Server:
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, **launch)
         try:
             line = startup_line(self.process)
+            assert line.startswith(b"READY "), (line, self.process.poll())
+            self.port = int(line.split()[1])
         except BaseException:
-            self.process.kill()
-            self.process.communicate()
+            self.cleanup()
             raise
-        assert line.startswith(b"READY "), (line, self.process.poll())
-        self.port = int(line.split()[1])
 
     def connect(self):
         return socket.create_connection(("127.0.0.1", self.port), timeout=4)
@@ -203,9 +202,19 @@ class Server:
             self.process.returncode, output, errors)
 
     def cleanup(self):
-        if self.process.poll() is None:
+        # Diagnostic helpers may survive their parent and keep its pipes open.
+        # The session belongs to this fixture even after its leader has exited.
+        if os.name != 'nt':
+            try:
+                os.killpg(self.process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        elif self.process.poll() is None:
             self.process.kill()
-            self.process.communicate()
+        self.process.wait(timeout=6)
+        for stream in (self.process.stdout, self.process.stderr):
+            if stream is not None:
+                stream.close()
 
 
 def http_tests(binary, directory):
