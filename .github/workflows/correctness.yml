@@ -24,7 +24,14 @@ jobs:
           path: luce-server
       - name: Read pinned Base revision
         id: base
-        run: echo "revision=$(cat luce-server/bootstrap/BASE)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "revision=$(cat luce-server/bootstrap/BASE)" >> "$GITHUB_OUTPUT"
+          echo "json=$(cat luce-server/bootstrap/JSON)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: dymokomi/luce-json
+          ref: ${{ steps.base.outputs.json }}
+          path: luce-json
       - uses: actions/checkout@v7
         with:
           repository: dymokomi/luce-base

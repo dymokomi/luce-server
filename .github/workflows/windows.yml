@@ -17,6 +17,12 @@ jobs:
         shell: pwsh
         run: |
           "base=$(Get-Content luce-server/bootstrap/BASE)" >> $env:GITHUB_OUTPUT
+          "json=$(Get-Content luce-server/bootstrap/JSON)" >> $env:GITHUB_OUTPUT
+      - uses: actions/checkout@v7
+        with:
+          repository: dymokomi/luce-json
+          ref: ${{ steps.pins.outputs.json }}
+          path: luce-json
       - uses: actions/checkout@v7
         with:
           repository: dymokomi/luce-base

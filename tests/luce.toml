@@ -4,3 +4,4 @@ source = "."
 
 [dependencies]
 luce_server = ".."
+luce_json = "../../luce-json"

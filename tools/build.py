@@ -16,16 +16,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def build(entry: Path, output: Path, compiler: Path, opt: int = 0) -> None:
     entry, output, compiler = entry.resolve(), output.resolve(), compiler.resolve()
+    expected = (ROOT / "bootstrap/JSON").read_text().strip()
+    actual = subprocess.check_output(["git", "-C", str(ROOT.parent / "luce-json"),
+                                      "rev-parse", "HEAD"], text=True).strip()
+    if actual != expected:
+        raise SystemExit(f"luce-json must be checked out at {expected}, found {actual}")
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="luce-server-") as temporary:
-        project = Path(temporary)
+        project = Path(temporary) / "luce-server"
         source = project / "src"
         shutil.copytree(ROOT / "src/luce_server", source / "luce_server",
                         ignore=shutil.ignore_patterns(".DS_Store"))
         shutil.copy2(entry, source / "main.lucb")
         shutil.copy2(ROOT / "luce.toml", project / "luce.toml")
+        shutil.copytree(ROOT.parent / "luce-json/src", Path(temporary) / "luce-json/src")
+        shutil.copy2(ROOT.parent / "luce-json/luce.toml", Path(temporary) / "luce-json/luce.toml")
+        environment = dict(os.environ)
+        environment.setdefault("LUCE_STD", str(ROOT.parent / "luce-base/src/std"))
+        environment.setdefault("LUCE_CACHE", str(ROOT / "build/cache"))
         subprocess.run([str(compiler), "build", str(source / "main.lucb"), "--native",
-                        "--opt", str(opt), "-o", str(output)], check=True, cwd=ROOT)
+                        "--opt", str(opt), "-o", str(output)], check=True, cwd=ROOT,
+                       env=environment, timeout=600)
 
 
 if __name__ == "__main__":

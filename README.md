@@ -46,7 +46,11 @@ luce_server = "../luce-server"
 ```
 
 Imports resolve through the package's actual exports. Native compilation is the
-default. The Base compiler pin is in `bootstrap/BASE`. A complete Base consumer is
+default. The Base compiler pin is in `bootstrap/BASE`. JSON is a separate package:
+check out sibling `luce-json` at `bootstrap/JSON` before building/testing. The test
+builder verifies that revision and copies both packages into its isolated source
+tree; tests importing JSON directly declare that dependency too.
+A complete Base consumer is
 in [tests/server.lucb](tests/server.lucb); it uses explicit Base reference ownership.
 
 ```sh
