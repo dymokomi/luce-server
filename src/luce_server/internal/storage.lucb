@@ -30,9 +30,13 @@ pub struct Buffer: io.Writer:
     pub var maximum: usize = 1048576
 
     pub func view() -> const u8[]:
+        if self.used == 0:
+            var empty: const u8[]
+            return empty
         return self.data[..<self.used]
 
     pub mutating func append(input: const u8[]) -> !:
+        if input.length == 0: return
         if input.length > self.maximum - self.used:
             error(limit, "the buffer limit was exceeded")
         let needed = self.used + input.length
