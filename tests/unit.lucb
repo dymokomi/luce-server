@@ -7,6 +7,34 @@ import luce_server.internal.responses
 import luce_server.internal.static_files
 import luce_server.http
 import luce_server.internal.dates
+import luce_server.response
+import luce_server.internal.response_data
+import memory
+
+func test_large_response() -> !:
+    let bytes = try alloc u8[67108865] in memory.heap
+    defer free(bytes) in memory.heap
+    for i in 0..<bytes.length: bytes[i] = (u8)(i % 251)
+    let value = try http.Response.bytes(bytes[..<67108864])
+    defer value.release()
+    var rejected = false
+    var too_small = response.transfer(value, 1048576) catch failure:
+        assert(failure.code == storage.limit)
+        rejected = true
+        recover response_data.Data(bytes = storage.Buffer())
+    defer too_small.close()
+    assert(rejected)
+    var moved = try response.transfer(value, 67108864)
+    defer moved.close()
+    assert(moved.bytes.used == 67108864)
+    for i in 0..<moved.bytes.used: assert(moved.bytes.view()[i] == bytes[i])
+    rejected = false
+    let oversized = http.Response.bytes(bytes) catch failure:
+        assert(failure.code == storage.limit)
+        rejected = true
+        recover value.clone()
+    defer oversized.release()
+    assert(rejected)
 
 func test_paths() -> !:
     var buffer = storage.Buffer(maximum = 8192)
@@ -47,6 +75,7 @@ func test_routes() -> !:
     assert(static_files.byte_range("bytes=8-", 8) == none)
 
 pub func main(arguments: str[]) -> i32!:
+    try test_large_response()
     try test_paths()
     try test_routes()
     var stamp: u8[29]

@@ -30,6 +30,11 @@ HTTP handlers take a checked `Request` and return a `Response`. `Response.json`
 uses structured standard `json.Value` objects; `Response.file` owns an opened file.
 `request.body()` returns an independently owned `Body`, with bounded reads and
 atomic file publication. A retained request view expires when its handler returns.
+Response byte builders accept up to 64 MiB, matching the maximum configurable
+`ServerConfig.response_limit`. Dispatch still enforces that server's selected
+limit (1 MiB by default). Raising the builder ceiling does not allocate 64 MiB
+for every response. Unit tests cover exact capacity, rejection above capacity,
+and rejection at a smaller dispatch limit without consuming the response.
 
 A WebSocket handler accepts or rejects its opening, then uses `receive`, `send`,
 `send_text`, `send_bytes` and `close`. It can send before receiving any message.

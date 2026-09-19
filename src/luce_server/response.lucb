@@ -14,7 +14,9 @@ pub struct Response:
     var committed: bool
 
     pub func init(text: str = "", status: i64 = 200) -> !:
-        self.data = Data(bytes = Buffer())
+        # Builders support the maximum configurable response size. Dispatch still
+        # enforces the individual server's (possibly smaller) response_limit.
+        self.data = Data(bytes = Buffer(maximum = 67108864))
         self.committed = false
         errdefer self.data.close()
         try response_data.content(&self.data, status, "text/plain; charset=utf-8", text.bytes)
