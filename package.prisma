@@ -1,7 +1,7 @@
 #prisma 4.0
 def package "luce-server" {
     str owner = "dymokomi"
-    str version = "0.1.2"
+    str version = "0.1.3"
     str kind = "package"
     str language = "luce-base"
     str description = "A multithreaded server library written entirely in Luce Base. It provides HTTP routing, REST responses, static content, bounded file transfers, WebSocket sessions and TCP streams."
