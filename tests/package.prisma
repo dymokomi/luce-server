@@ -1,0 +1,10 @@
+#prisma 4.0
+def package "luce_server_tests" {
+    str source = "."
+    def dependency "luce_server" {
+        str path = ".."
+    }
+    def dependency "luce_json" {
+        str path = "../../luce-json"
+    }
+}
