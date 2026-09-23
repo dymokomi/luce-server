@@ -6,6 +6,7 @@ luce_server namespace that a future installer will place in a consumer package.
 """
 import argparse
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -28,9 +29,11 @@ def build(entry: Path, output: Path, compiler: Path, opt: int = 0) -> None:
         shutil.copytree(ROOT / "src/luce_server", source / "luce_server",
                         ignore=shutil.ignore_patterns(".DS_Store"))
         shutil.copy2(entry, source / "main.lucb")
-        shutil.copy2(ROOT / "luce.toml", project / "luce.toml")
-        shutil.copytree(ROOT.parent / "luce-json/src", Path(temporary) / "luce-json/src")
-        shutil.copy2(ROOT.parent / "luce-json/luce.toml", Path(temporary) / "luce-json/luce.toml")
+        # the package's own manifest, its dependencies at the checkouts beside this one
+        manifest = (ROOT / "package.prisma").read_text()
+        manifest = re.sub(r'str path = "\.\./([^"]+)"',
+                          lambda match: 'str path = "%s"' % (ROOT.parent / match.group(1)).as_posix(), manifest)
+        (project / "package.prisma").write_text(manifest)
         environment = dict(os.environ)
         environment.setdefault("LUCE_STD", str(ROOT.parent / "luce-base/src/std"))
         environment.setdefault("LUCE_CACHE", str(ROOT / "build/cache"))

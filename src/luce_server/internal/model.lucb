@@ -57,7 +57,7 @@ pub struct State:
     pub var temporary_directory: str
     pub var table: Table
     pub var listener: net.Listener
-    pub var cancellation: net.Cancellation
+    pub var cancellation: sync.Cancellation
     pub var lifecycle: Lifecycle
     pub var dispatch: Dispatch
     pub var counters: Counters
