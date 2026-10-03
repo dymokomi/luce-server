@@ -2,21 +2,21 @@
 ## transport threads; application owners never leave their runtime thread.
 
 import interop
-import luce_server.internal.application_pool
-from luce_server.internal.application_pool import Application
-import luce_server.internal.dispatch_queue
-from luce_server.internal.model import Exchange, WorkKind
-import luce_server.internal.responses
-from luce_server.internal.routes import Kind, Table
-import luce_server.internal.storage
-import luce_server.request
-import luce_server.response
-import luce_server.route
-from luce_server.route import Route
-import luce_server.sessions.tcp_session as socket_api
-import luce_server.static_root
-from luce_server.static_root import StaticRoot
-import luce_server.sessions.websocket_session as websocket_api
+import internal.application_pool
+from internal.application_pool import Application
+import internal.dispatch_queue
+from internal.model import Exchange, WorkKind
+import internal.responses
+from internal.routes import Kind, Table
+import internal.storage
+import request
+import response
+import route
+from route import Route
+import sessions.tcp_session as socket_api
+import static_root
+from static_root import StaticRoot
+import sessions.websocket_session as websocket_api
 import ownership
 
 struct RouterState:

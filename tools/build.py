@@ -26,7 +26,7 @@ def build(entry: Path, output: Path, compiler: Path, opt: int = 0) -> None:
     with tempfile.TemporaryDirectory(prefix="luce-server-") as temporary:
         project = Path(temporary) / "luce-server"
         source = project / "src"
-        shutil.copytree(ROOT / "src/luce_server", source / "luce_server",
+        shutil.copytree(ROOT / "src", source,
                         ignore=shutil.ignore_patterns(".DS_Store"))
         shutil.copy2(entry, source / "main.lucb")
         # the package's own manifest, its dependencies at the checkouts beside this one

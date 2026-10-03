@@ -3,11 +3,11 @@
 
 import interop
 import io
-import luce_server.internal.lifecycle
-from luce_server.internal.model import Exchange
-import luce_server.internal.storage
-import luce_server.internal.wire
-import net
+import internal.lifecycle
+from internal.model import Exchange
+import internal.storage
+import internal.wire
+import luce_std.net
 
 
 pub struct Session:

@@ -1,10 +1,10 @@
 
-from luce_server.internal.body import Body
-import luce_server.internal.lifecycle
-from luce_server.internal.model import Exchange, RequestData, State
-from luce_server.internal.response_data import Data
-import luce_server.internal.storage
-from luce_server.internal.storage import Buffer
+from internal.body import Body
+import internal.lifecycle
+from internal.model import Exchange, RequestData, State
+from internal.response_data import Data
+import internal.storage
+from internal.storage import Buffer
 import memory
 
 pub func make_request(state: State*, http: bool = true) -> Exchange*!:

@@ -2,9 +2,9 @@
 ## preserve the selected directory and closing a declaration cannot break a mount.
 
 import c
-import files
+import luce_std.files
 import interop
-import luce_server.internal.storage
+import internal.storage
 import strings
 
 pub struct StaticRoot:

@@ -2,8 +2,8 @@
 ## A managed factory is entered on its new runtime thread by interop.Worker.
 
 import interop
-from luce_server.internal.model import State
-import luce_server.internal.storage
+from internal.model import State
+import internal.storage
 
 pub type Application = interop.Callback[unit, unit]
 pub type Factory = interop.WorkerEntry[str, unit, unit]

@@ -1,12 +1,12 @@
 ## Neutral cross-thread layouts. Runtime owners and callbacks never live here.
 
 import interop
-from luce_server.internal.body import Body
-from luce_server.internal.response_data import Data
-from luce_server.internal.routes import Table
-from luce_server.internal.storage import Buffer
-import net
-import process
+from internal.body import Body
+from internal.response_data import Data
+from internal.routes import Table
+from internal.storage import Buffer
+import luce_std.net
+import luce_std.process
 import sync
 import thread
 

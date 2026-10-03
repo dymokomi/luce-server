@@ -1,6 +1,6 @@
 
-from luce_server.internal.model import State
-import luce_server.internal.storage
+from internal.model import State
+import internal.storage
 import memory
 import sync
 import thread

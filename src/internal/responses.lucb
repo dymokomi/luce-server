@@ -2,11 +2,11 @@
 ## the server lock. Network threads observe immutable bytes after commitment.
 
 import io
-import luce_server.internal.dates
-from luce_server.internal.model import Exchange
-import luce_server.internal.response_data
-import luce_server.internal.storage
-import net
+import internal.dates
+from internal.model import Exchange
+import internal.response_data
+import internal.storage
+import luce_std.net
 import time
 
 pub func send(destination: io.Writer, request: Exchange*, keep_alive: bool) -> !:

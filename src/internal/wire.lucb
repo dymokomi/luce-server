@@ -2,13 +2,13 @@
 ## All transfers use net's nonblocking deadline/cancellation adapter.
 
 import io
-import luce_server.internal.dates
-from luce_server.internal.model import Exchange, State
-import luce_server.internal.storage
+import internal.dates
+from internal.model import Exchange, State
+import internal.storage
 import memory
-import net
+import luce_std.net
 import time
-import utf8
+import luce_std.utf8
 
 pub struct Input:
     pub var bytes: u8[32768]

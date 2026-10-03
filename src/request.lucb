@@ -2,15 +2,15 @@
 ## owned bodies may escape; retaining the view never extends its validity scope.
 
 import interop
-import luce_server.body
-from luce_server.body import Body
-from luce_server.internal.model import Exchange
-import luce_server.internal.request_state
-import luce_server.internal.storage
-import luce_server.internal.url
+import body
+from body import Body
+from internal.model import Exchange
+import internal.request_state
+import internal.storage
+import internal.url
 import ownership
 import strings
-import utf8
+import luce_std.utf8
 
 pub struct Scope:
     pub var pending: Exchange*

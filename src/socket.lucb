@@ -1,9 +1,9 @@
 ## TCP server declarations and scoped byte-stream sessions.
-import luce_server.server
-import luce_server.config
-import luce_server.router
-import luce_server.internal.application_pool
-import luce_server.sessions.tcp_session
+import server
+import config
+import router
+import internal.application_pool
+import sessions.tcp_session
 
 pub type Server = server.Server
 pub type ServerConfig = config.ServerConfig

@@ -1,9 +1,9 @@
 
 ## The server owner serializes lifecycle calls. Cancellation wakes transport and
 ## dispatch before either pool is joined; application owners die on their worker.
-import luce_server.internal.dispatch_queue
-import luce_server.internal.lifecycle
-from luce_server.internal.model import State
+import internal.dispatch_queue
+import internal.lifecycle
+from internal.model import State
 
 pub func join(state: State*):
     lifecycle.stop(state)

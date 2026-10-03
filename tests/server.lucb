@@ -1,13 +1,13 @@
 ## Independent wire clients use the same object API as the Luce application.
 ## Factories build retained handlers on their application worker; no test thread
 ## attaches tokens or reaches into transport state.
-import http
-import websocket
-import socket
+import luce_server.http
+import luce_server.websocket
+import luce_server.socket
 import interop
 import ownership
 import thread
-import json
+import luce_json.json
 
 var parallel_handlers: @u64
 var peak_handlers: @u64

@@ -3,11 +3,11 @@
 
 import interop
 import io
-import luce_server.internal.body as storage_body
-import luce_server.internal.storage
-from luce_server.internal.storage import Buffer
+import internal.body as storage_body
+import internal.storage
+from internal.storage import Buffer
 import strings
-import utf8
+import luce_std.utf8
 
 pub struct Body:
     var payload: storage_body.Body

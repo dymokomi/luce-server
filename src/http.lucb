@@ -1,17 +1,17 @@
 ## HTTP application objects. Protocol machinery and runtime workers belong to
 ## the library; handlers receive a scoped Request and return an owned Response.
 
-import files
-import luce_server.body
-import luce_server.config
-import luce_server.internal.application_pool
-import luce_server.internal.storage
-import luce_server.request
-import luce_server.response
-import luce_server.route
-import luce_server.router
-import luce_server.server
-import luce_server.static_root
+import luce_std.files
+import body
+import config
+import internal.application_pool
+import internal.storage
+import request
+import response
+import route
+import router
+import server
+import static_root
 
 pub type ServerConfig = config.ServerConfig
 pub type Statistics = config.Statistics

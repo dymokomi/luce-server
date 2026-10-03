@@ -2,19 +2,19 @@
 ## requests are serialized on the wire, including pipelined input already read.
 
 import io
-import luce_server.internal.dispatch_queue
-import luce_server.internal.lifecycle
-from luce_server.internal.model import Exchange, State, WorkKind
-import luce_server.internal.request_state
-import luce_server.internal.responses
-from luce_server.internal.routes import Kind
-import luce_server.internal.static_files
-from luce_server.internal.storage import Buffer
-import luce_server.internal.url
-import luce_server.internal.wire
-from luce_server.internal.wire import Input
+import internal.dispatch_queue
+import internal.lifecycle
+from internal.model import Exchange, State, WorkKind
+import internal.request_state
+import internal.responses
+from internal.routes import Kind
+import internal.static_files
+from internal.storage import Buffer
+import internal.url
+import internal.wire
+from internal.wire import Input
 import memory
-import net
+import luce_std.net
 
 func allowed(request: Exchange*) -> bool!:
     var methods: str[128]

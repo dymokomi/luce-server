@@ -1,5 +1,5 @@
 ## WebSocket sessions share HTTP listeners through Router.websocket.
-import luce_server.sessions.websocket_session
+import sessions.websocket_session
 
 pub type Session = websocket_session.Session
 pub type Message = websocket_session.Message

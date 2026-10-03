@@ -1,7 +1,7 @@
 ## Copied configuration, validated before any listener or thread is acquired.
 
-import luce_server.internal.storage
-import net
+import internal.storage
+import luce_std.net
 import strings
 
 pub struct ServerConfig:

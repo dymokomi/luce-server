@@ -1,5 +1,5 @@
 ## Construction and partial startup leave no listener, worker or callback owners.
-import http
+import luce_server.http
 import interop
 import ownership
 

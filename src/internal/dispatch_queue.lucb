@@ -1,8 +1,8 @@
 
 ## A queue owns one reference, transferred to the application by take(). A
 ## timeout can remove a queued request without racing an application's claim.
-from luce_server.internal.model import Exchange, State
-import luce_server.internal.request_state
+from internal.model import Exchange, State
+import internal.request_state
 import time
 
 pub func submit(request: Exchange*) -> bool:

@@ -2,12 +2,12 @@
 ## Returning it does not write to a socket; dispatch commits it exactly once.
 
 import interop
-import json
-import luce_server.internal.response_data
-from luce_server.internal.response_data import Data
-import luce_server.internal.static_files
-import luce_server.internal.storage
-from luce_server.internal.storage import Buffer
+import luce_json.json
+import internal.response_data
+from internal.response_data import Data
+import internal.static_files
+import internal.storage
+from internal.storage import Buffer
 
 pub struct Response:
     var data: Data

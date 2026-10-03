@@ -3,21 +3,21 @@
 
 import interop
 import io
-import luce_server.body
-import luce_server.internal.body as body_storage
-import luce_server.internal.lifecycle
-from luce_server.internal.model import Exchange
-import luce_server.internal.responses
-import luce_server.internal.storage
-from luce_server.internal.storage import Buffer
-import luce_server.internal.wire
-from luce_server.internal.wire import Input
-import luce_server.response
-from luce_server.response import Response
-import net
+import body
+import internal.body as body_storage
+import internal.lifecycle
+from internal.model import Exchange
+import internal.responses
+import internal.storage
+from internal.storage import Buffer
+import internal.wire
+from internal.wire import Input
+import response
+from response import Response
+import luce_std.net
 import ownership
 import time
-import utf8
+import luce_std.utf8
 
 pub struct Message:
     var payload: interop.Reference[body.Body]?

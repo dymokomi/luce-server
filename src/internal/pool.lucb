@@ -2,15 +2,15 @@
 ## connection and no unbounded userspace accept queue; the OS backlog is bounded.
 
 import io
-import luce_server.internal.dispatch_queue
-import luce_server.internal.http_connection
-import luce_server.internal.lifecycle
-from luce_server.internal.model import State, WorkKind
-import luce_server.internal.request_state
-import luce_server.internal.shutdown
-import luce_server.internal.wire
+import internal.dispatch_queue
+import internal.http_connection
+import internal.lifecycle
+from internal.model import State, WorkKind
+import internal.request_state
+import internal.shutdown
+import internal.wire
 import memory
-import net
+import luce_std.net
 import thread
 
 func worker(context: void*?):

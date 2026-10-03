@@ -9,7 +9,7 @@ The separate [luce-http-server](https://github.com/dymokomi/luce-http-server) pr
 shows the API from high-level Luce. Its route factory has this shape:
 
 ```luce
-from http import Router, Application
+from luce_server.http import Router, Application
 from api import Api
 
 pub func configure(upload_directory: str) -> Application!:

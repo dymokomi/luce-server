@@ -1,10 +1,10 @@
 ## A retained handler paired with an immutable method and path pattern.
 
 import interop
-import luce_server.internal.storage
-import luce_server.internal.url
-from luce_server.request import Request
-from luce_server.response import Response
+import internal.storage
+import internal.url
+from request import Request
+from response import Response
 import ownership
 
 pub type Handler = interop.Callback[interop.View[Request], interop.Reference[Response]]
