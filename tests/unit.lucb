@@ -1,14 +1,8 @@
-import luce_server.internal.storage
-import luce_server.internal.url
-import luce_server.internal.routes
-import luce_server.internal.model
-import luce_server.internal.wire
-import luce_server.internal.responses
-import luce_server.internal.static_files
-import luce_server.http
-import luce_server.internal.dates
-import luce_server.response
-import luce_server.internal.response_data
+from luce_server.internal import storage, url, routes, model, wire, responses, static_files
+from luce_server import http
+from luce_server.internal import dates
+from luce_server import response
+from luce_server.internal import response_data
 import memory
 
 func test_large_response() -> !:

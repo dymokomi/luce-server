@@ -4,7 +4,7 @@
 import internal.storage
 from internal.storage import Buffer
 import strings
-import luce_std.utf8
+from luce_std import utf8
 
 func hex_digit(byte: u8) -> u8!:
     if byte >= '0' and byte <= '9':

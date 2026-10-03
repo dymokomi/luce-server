@@ -1,7 +1,7 @@
 ## Copied configuration, validated before any listener or thread is acquired.
 
 import internal.storage
-import luce_std.net
+from luce_std import net
 import strings
 
 pub struct ServerConfig:

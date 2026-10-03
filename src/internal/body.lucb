@@ -2,12 +2,12 @@
 ## temporary file. Network input is streamed; file size is never an allocation.
 
 import c
-import luce_std.files
+from luce_std import files
 import io
 import internal.storage
 from internal.storage import Buffer
 import memory
-import luce_std.paths
+from luce_std import paths
 
 pub struct Body:
     pub var bytes: Buffer

@@ -14,10 +14,10 @@ import internal.wire
 from internal.wire import Input
 import response
 from response import Response
-import luce_std.net
+from luce_std import net
 import ownership
 import time
-import luce_std.utf8
+from luce_std import utf8
 
 pub struct Message:
     var payload: interop.Reference[body.Body]?

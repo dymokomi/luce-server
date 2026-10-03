@@ -5,8 +5,7 @@ from internal.body import Body
 from internal.response_data import Data
 from internal.routes import Table
 from internal.storage import Buffer
-import luce_std.net
-import luce_std.process
+from luce_std import net, process
 import sync
 import thread
 

@@ -3,14 +3,14 @@
 ## ranges and streaming reads refer to the same regular file descriptor.
 
 import c
-import luce_std.files
+from luce_std import files
 from internal.model import Exchange
 import internal.responses
 from internal.routes import Route
 import internal.storage
 from internal.storage import Buffer
 import internal.url
-import luce_std.paths
+from luce_std import paths
 import strings
 
 pub func media_type(path: str) -> str:

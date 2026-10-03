@@ -1,7 +1,7 @@
-import luce_server.http
+from luce_server import http
 import interop
 import ownership
-import luce_json.json
+from luce_json import json
 
 struct Handlers:
     var count: i64

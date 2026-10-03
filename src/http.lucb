@@ -1,7 +1,7 @@
 ## HTTP application objects. Protocol machinery and runtime workers belong to
 ## the library; handlers receive a scoped Request and return an owned Response.
 
-import luce_std.files
+from luce_std import files
 import body
 import config
 import internal.application_pool

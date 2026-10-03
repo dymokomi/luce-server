@@ -2,7 +2,7 @@
 ## Construction copies configuration; start acquires resources, close joins them.
 
 import c
-import luce_std.files
+from luce_std import files
 import io
 import interop
 from config import ServerConfig, Statistics
@@ -17,8 +17,7 @@ import internal.storage
 import static_root
 from static_root import StaticRoot
 import memory
-import luce_std.net
-import luce_std.process
+from luce_std import net, process
 import thread
 
 pub struct Server:

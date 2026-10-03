@@ -2,12 +2,11 @@
 ## it to the network thread. It contains no ARC owners or borrowed application data.
 
 import c
-import luce_std.files
+from luce_std import files
 import io
 import internal.storage
 from internal.storage import Buffer
-import luce_std.net
-import luce_std.paths
+from luce_std import net, paths
 import strings
 
 pub struct Data:

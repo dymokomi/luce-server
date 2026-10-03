@@ -7,7 +7,7 @@ import internal.body as storage_body
 import internal.storage
 from internal.storage import Buffer
 import strings
-import luce_std.utf8
+from luce_std import utf8
 
 pub struct Body:
     var payload: storage_body.Body

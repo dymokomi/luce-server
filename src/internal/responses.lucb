@@ -6,7 +6,7 @@ import internal.dates
 from internal.model import Exchange
 import internal.response_data
 import internal.storage
-import luce_std.net
+from luce_std import net
 import time
 
 pub func send(destination: io.Writer, request: Exchange*, keep_alive: bool) -> !:

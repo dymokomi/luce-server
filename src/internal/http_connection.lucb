@@ -14,7 +14,7 @@ import internal.url
 import internal.wire
 from internal.wire import Input
 import memory
-import luce_std.net
+from luce_std import net
 
 func allowed(request: Exchange*) -> bool!:
     var methods: str[128]

@@ -6,9 +6,9 @@ import internal.dates
 from internal.model import Exchange, State
 import internal.storage
 import memory
-import luce_std.net
+from luce_std import net
 import time
-import luce_std.utf8
+from luce_std import utf8
 
 pub struct Input:
     pub var bytes: u8[32768]

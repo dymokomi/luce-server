@@ -2,7 +2,7 @@
 ## preserve the selected directory and closing a declaration cannot break a mount.
 
 import c
-import luce_std.files
+from luce_std import files
 import interop
 import internal.storage
 import strings

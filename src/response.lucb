@@ -2,7 +2,7 @@
 ## Returning it does not write to a socket; dispatch commits it exactly once.
 
 import interop
-import luce_json.json
+from luce_json import json
 import internal.response_data
 from internal.response_data import Data
 import internal.static_files

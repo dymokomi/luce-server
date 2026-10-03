@@ -1,7 +1,7 @@
 ## Registration is single-threaded before start. The frozen table is read by all
 ## network threads; application route identifiers contain no callback pointers.
 
-import luce_std.files
+from luce_std import files
 import internal.storage
 import internal.url
 
