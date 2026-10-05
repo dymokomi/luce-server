@@ -191,7 +191,7 @@ pub struct Router:
                         error(storage.conflict, "application workers declared different static roots")
             native.table.destroy()
         native.frozen = true
-        return try Application.bind_mutating(try self.owner(), RouterState.run)
+        return try Application.bind(try self.owner(), RouterState.run)
 
     func owner() -> interop.Reference[RouterState]!:
         return self.state else error(storage.closed, "router is closed")
