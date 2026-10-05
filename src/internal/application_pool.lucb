@@ -28,7 +28,7 @@ struct Bootstrap:
     let factory: Factory
     let first: bool
 
-    func open(raw: void*?, data: str) -> interop.Outcome[Application]:
+    static func open(raw: void*?, data: str) -> interop.Outcome[Application]:
         let context = (Bootstrap*)(raw else trap("server application has no bootstrap context"))
         active_server = context.state
         first_application = context.first

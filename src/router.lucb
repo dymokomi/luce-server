@@ -90,7 +90,7 @@ struct RouterState:
         pending.done = true
         state.dispatch.changed.broadcast()
 
-    func complete_session(pending: Exchange*):
+    static func complete_session(pending: Exchange*):
         let state = pending.owner
         state.dispatch.lock.lock()
         pending.done = true

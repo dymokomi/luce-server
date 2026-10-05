@@ -21,7 +21,7 @@ pub struct Response:
         errdefer self.data.close()
         try response_data.content(&self.data, status, "text/plain; charset=utf-8", text.bytes)
 
-    pub func bytes(value: const u8[], content_type: str = "application/octet-stream", status: i64 = 200) -> interop.Reference[Response]!:
+    pub static func bytes(value: const u8[], content_type: str = "application/octet-stream", status: i64 = 200) -> interop.Reference[Response]!:
         let native = try new Response()
         response_data.content(&native.data, status, content_type, value) catch failure:
             native.close()
@@ -29,10 +29,10 @@ pub struct Response:
             error(failure.code, failure.message)
         return try interop.Reference[Response].adopt(native, response_type)
 
-    pub func json(value: interop.Reference[json.Value], status: i64 = 200) -> interop.Reference[Response]!:
+    pub static func json(value: interop.Reference[json.Value], status: i64 = 200) -> interop.Reference[Response]!:
         return try Response.bytes((try value.get()).encode().bytes, "application/json", status)
 
-    pub func file(path: str) -> interop.Reference[Response]!:
+    pub static func file(path: str) -> interop.Reference[Response]!:
         let native = try new Response()
         response_data.file(&native.data, path, static_files.media_type(path)) catch failure:
             native.close()
