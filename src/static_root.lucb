@@ -17,7 +17,7 @@ pub struct StaticRoot:
         defer storage.release(owned)
         self.directory = try files.Directory.open((c.str)owned, false)
 
-    pub mutating func close():
+    pub func close():
         self.directory.destroy()
 
 pub let root_type: interop.Type[StaticRoot] = interop.Type[StaticRoot]("StaticRoot", StaticRoot.close, closeable = true)

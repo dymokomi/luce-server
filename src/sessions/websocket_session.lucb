@@ -37,7 +37,7 @@ pub struct Message:
             error(storage.invalid, "WebSocket message is binary")
         return try (self.payload else error(storage.closed, "WebSocket message is closed")).value().text(limit)
 
-    pub mutating func close():
+    pub func close():
         if let payload = self.payload:
             self.payload = none
             payload.release()
@@ -55,7 +55,7 @@ pub struct Session:
         let value = self.state.pending.http().head.field(name) else return none
         var decoder: utf8.Decoder
         for byte in value.bytes:
-            discard(try decoder.push(byte))
+            _ = try decoder.push(byte)
         try decoder.finish()
         return value
 
@@ -114,13 +114,13 @@ struct SessionState:
     var accepted: bool
     var closed: bool
 
-    mutating func send(opcode: net.WebSocketOpcode, payload: const u8[]) -> !:
+    func send(opcode: net.WebSocketOpcode, payload: const u8[]) -> !:
         if not self.accepted or self.closed:
             error(storage.closed, "WebSocket session is not open")
         var destination = try wire.stream(self.connection, self.pending.owner, self.pending.owner.config.response_timeout_ms)
         try self.encoder.write(&destination, opcode, payload)
 
-    mutating func receive() -> interop.Reference[Message]?!:
+    func receive() -> interop.Reference[Message]?!:
         if self.closed:
             return none
         if not self.accepted:
@@ -176,7 +176,7 @@ struct SessionState:
                 return try interop.Reference[Message].adopt(native, message_type)
         error(net.cancelled, "WebSocket server stopped")
 
-    mutating func report_error(code: ErrorCode):
+    func report_error(code: ErrorCode):
         if self.closed or not self.accepted:
             return
         var close_code: u16 = 1011
@@ -196,7 +196,7 @@ struct SessionState:
         let payload: u8[2] = [(u8)(close_code >> 8), (u8)close_code]
         self.encoder.write(&destination, net.WebSocketOpcode.close, payload) catch: return
 
-    mutating func close(code: u16) -> !:
+    func close(code: u16) -> !:
         if self.closed:
             return
         if not self.accepted:
@@ -223,15 +223,15 @@ pub func dispatch(pending: Exchange*, handler: Handler, lease: interop.Lease) ->
     let input = (Input*)(pending.session_input else trap("WebSocket has no input"))
     let server = pending.owner
     var state = SessionState(pending, connection, input,
-        net.WebSocketDecoder.create(true, (u64)server.config.body_limit, (u64)server.config.body_limit),
-        net.WebSocketEncoder.create(false, (u64)server.config.response_limit, (u64)server.config.response_limit), false, false)
+                             net.WebSocketDecoder.create(true, (u64)server.config.body_limit, (u64)server.config.body_limit),
+                             net.WebSocketEncoder.create(false, (u64)server.config.response_limit, (u64)server.config.response_limit), false, false)
     let view = try interop.View[Session].make(Session(&state), session_type, lease)
     defer view.release()
     let result = handler.invoke(view)
     defer result.release()
-    discard(result.get() catch failure:
+    _ = result.get() catch failure:
         state.report_error(failure.code)
-        error(failure.code, failure.message))
+        error(failure.code, failure.message)
     if state.accepted:
         try state.close(1000)
     elif not state.closed:

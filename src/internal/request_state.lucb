@@ -1,4 +1,3 @@
-
 from internal.body import Body
 import internal.lifecycle
 from internal.model import Exchange, RequestData, State
@@ -10,9 +9,9 @@ import memory
 pub func make_request(state: State*, http: bool = true) -> Exchange*!:
     let before = state.counters.outstanding.add(1, .acq_rel)
     if before >= state.config.network_threads * 4:
-        discard(state.counters.outstanding.sub(1, .acq_rel))
+        _ = state.counters.outstanding.sub(1, .acq_rel)
         error(storage.limit, "too many outstanding server exchanges")
-    errdefer discard(state.counters.outstanding.sub(1, .acq_rel))
+    errdefer _ = state.counters.outstanding.sub(1, .acq_rel)
     let exchange = try new Exchange(owner = state) in memory.heap
     errdefer free(exchange) in memory.heap
     if http:
@@ -28,7 +27,7 @@ pub func make_request(state: State*, http: bool = true) -> Exchange*!:
     return exchange
 
 pub func retain_request(request: Exchange*):
-    discard(request.references.add(1, .relaxed))
+    _ = request.references.add(1, .relaxed)
 
 pub func release_request(request: Exchange*):
     if request.references.sub(1, .acq_rel) != 1:
@@ -43,5 +42,5 @@ pub func release_request(request: Exchange*):
         data.reply.close()
         free(data) in memory.heap
     free(request) in memory.heap
-    discard(state.counters.outstanding.sub(1, .acq_rel))
+    _ = state.counters.outstanding.sub(1, .acq_rel)
     lifecycle.release(state)

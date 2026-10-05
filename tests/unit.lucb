@@ -6,7 +6,7 @@ from luce_server.internal import response_data
 import memory
 
 func test_large_response() -> !:
-    let bytes = try alloc u8[67108865] in memory.heap
+    let bytes = try new u8[67108865] --- in memory.heap
     defer free(bytes) in memory.heap
     for i in 0..<bytes.length: bytes[i] = (u8)(i % 251)
     let value = try http.Response.bytes(bytes[..<67108864])
@@ -50,17 +50,17 @@ func test_paths() -> !:
     let bad: str[6] = ["/a/../b", "/a/%2e%2e/b", "/a%2fb", "/a%00b", "/a//b", "/%ff"]
     for value in bad:
         var refused = false
-        discard(url.request_path(value, &buffer) catch:
+        _ = url.request_path(value, &buffer) catch:
             refused = true
-            recover "")
+            recover ""
         assert(refused)
 
 func test_routes() -> !:
     var table: routes.Table
     defer table.destroy()
-    discard(try table.add("GET", "/items/{id}"))
-    discard(try table.add("GET", "/items/recent"))
-    discard(try table.add("POST", "/items"))
+    _ = try table.add("GET", "/items/{id}")
+    _ = try table.add("GET", "/items/recent")
+    _ = try table.add("POST", "/items")
     assert(table.find("GET", "/items/recent") == 1)
     assert(table.find("HEAD", "/items/8") == 0)
     assert(table.find("DELETE", "/items/8") == none)

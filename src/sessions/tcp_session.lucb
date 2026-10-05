@@ -9,7 +9,6 @@ import internal.storage
 import internal.wire
 from luce_std import net
 
-
 pub struct Session:
     var state: SessionState*
 
@@ -58,4 +57,4 @@ pub func dispatch(pending: Exchange*, handler: Handler, lease: interop.Lease) ->
     defer view.release()
     let result = handler.invoke(view)
     defer result.release()
-    discard(try result.get())
+    _ = try result.get()

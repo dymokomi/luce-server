@@ -17,23 +17,23 @@ pub struct Body:
     pub func size() -> i64:
         return (i64)self.payload.length
 
-    pub mutating func bytes(limit: i64 = 1048576) -> const u8[]!:
+    pub func bytes(limit: i64 = 1048576) -> const u8[]!:
         if limit < 0 or limit > 67108864:
             error(storage.invalid, "body memory limit must be between zero and 64 MiB")
         self.loaded.maximum = (usize)limit
         return try self.payload.load(&self.loaded)
 
-    pub mutating func text(limit: i64 = 1048576) -> str!:
+    pub func text(limit: i64 = 1048576) -> str!:
         let data = try self.bytes(limit)
         var decoder: utf8.Decoder
         for byte in data:
-            discard(try decoder.push(byte))
+            _ = try decoder.push(byte)
         try decoder.finish()
         return (str)data
 
     ## Read successive chunks. The returned view expires on the next body read;
     ## Luce copies it. Each call bounds memory independently of the body's size.
-    pub mutating func read(maximum: i64 = 32768) -> const u8[]!:
+    pub func read(maximum: i64 = 32768) -> const u8[]!:
         if maximum < 1 or maximum > 1048576:
             error(storage.invalid, "body chunk size must be between 1 and 1 MiB")
         self.loaded.clear()
@@ -46,7 +46,7 @@ pub struct Body:
             let start = self.position
             self.position += amount
             return self.payload.bytes.view()[start..<self.position]
-        discard(try self.payload.temporary.seek((i64)self.position))
+        _ = try self.payload.temporary.seek((i64)self.position)
         var block: u8[32768]
         while self.loaded.used < amount:
             let left = amount - self.loaded.used
@@ -57,15 +57,15 @@ pub struct Body:
         self.position += amount
         return self.loaded.view()
 
-    pub mutating func rewind():
+    pub func rewind():
         self.position = 0
 
-    pub mutating func save(destination: str, replace: bool = false) -> !:
+    pub func save(destination: str, replace: bool = false) -> !:
         if destination.length == 0 or strings.contains(destination, "\0"):
             error(storage.invalid, "invalid upload destination")
         try self.payload.save(destination, replace)
 
-    pub mutating func close():
+    pub func close():
         self.payload.destroy()
         self.loaded.destroy()
 

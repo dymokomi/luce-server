@@ -83,7 +83,7 @@ pub func serve(connection: net.Connection*, state: State*, final_started: bool*)
             var destination = try wire.stream(connection, state, state.config.response_timeout_ms)
             *final_started = true
             try responses.send(&destination, request, false)
-            discard(state.counters.completed.add(1, .relaxed))
+            _ = state.counters.completed.add(1, .relaxed)
             return
         if request.http().head.expect_continue:
             try io.write_all(&source, "HTTP/1.1 100 Continue\r\n\r\n".bytes)
@@ -91,7 +91,7 @@ pub func serve(connection: net.Connection*, state: State*, final_started: bool*)
         if let index = route:
             request.http().route_index = index
             if state.table.entries[index].kind == Kind.websocket:
-                discard(try net.websocket_check_request(request.http().head))
+                _ = try net.websocket_check_request(request.http().head)
                 request.kind = WorkKind.websocket
             if request.kind == WorkKind.websocket:
                 request.session_connection = connection
@@ -118,7 +118,7 @@ pub func serve(connection: net.Connection*, state: State*, final_started: bool*)
         var destination = try wire.stream(connection, state, state.config.response_timeout_ms)
         *final_started = true
         try responses.send(&destination, request, keep)
-        discard(state.counters.completed.add(1, .relaxed))
+        _ = state.counters.completed.add(1, .relaxed)
         if request.http().reply.stop_after:
             lifecycle.begin_drain(state)
         if not keep:

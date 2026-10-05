@@ -6,6 +6,7 @@ import interop
 import ownership
 import thread
 from luce_json import json
+import strings
 
 var parallel_handlers: @u64
 var peak_handlers: @u64
@@ -36,7 +37,8 @@ struct Handlers:
     var expired_tcp: interop.View[socket.Session]?
 
     func ping(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
-        discard(view)
+        _ = self
+        _ = view
         var data = json.Value() catch failure: return failed(failure.code, failure.message)
         defer data.close()
         data.set_boolean("ok", true) catch failure: return failed(failure.code, failure.message)
@@ -44,6 +46,7 @@ struct Handlers:
         return owned(response)
 
     func echo(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
+        _ = self
         let body = view.value().body() catch failure: return failed(failure.code, failure.message)
         defer body.release()
         let bytes = body.value().bytes(1048576) catch failure: return failed(failure.code, failure.message)
@@ -51,16 +54,18 @@ struct Handlers:
         return owned(response)
 
     func item(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
+        _ = self
         return reply(view.value().parameter("id") else "missing")
 
     func query(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
+        _ = self
         let value = view.value().query("name") catch failure: return failed(failure.code, failure.message)
         return reply(value else "missing")
 
     func upload(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
         var path: u8[4096]
         let name = view.value().parameter("name") else "missing"
-        let destination = format(path, f"{self.uploads.value}/{name}") catch failure: return failed(failure.code, failure.message)
+        let destination = strings.format(path, f"{self.uploads.value}/{name}") catch failure: return failed(failure.code, failure.message)
         let body = view.value().body() catch failure: return failed(failure.code, failure.message)
         defer body.release()
         body.value().save(destination) catch failure: return failed(failure.code, failure.message)
@@ -69,12 +74,13 @@ struct Handlers:
     func download(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
         var path: u8[4096]
         let name = view.value().parameter("name") else "missing"
-        let destination = format(path, f"{self.uploads.value}/{name}") catch failure: return failed(failure.code, failure.message)
+        let destination = strings.format(path, f"{self.uploads.value}/{name}") catch failure: return failed(failure.code, failure.message)
         let response = http.Response.file(destination) catch failure: return failed(failure.code, failure.message)
         return owned(response)
 
     func shutdown(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
-        discard(view)
+        _ = self
+        _ = view
         let response = http.Response.bytes(b"bye") catch failure: return failed(failure.code, failure.message)
         response.value().shutdown_after() catch failure:
             response.release()
@@ -82,16 +88,18 @@ struct Handlers:
         return owned(response)
 
     func failure(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
-        discard(view)
+        _ = view
         return failed(http.invalid_state, self.uploads.value)
 
     func slow(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
-        discard(view)
+        _ = self
+        _ = view
         thread.sleep(800)
         return reply("late")
 
     func parallel(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
-        discard(view)
+        _ = self
+        _ = view
         let active = parallel_handlers.add(1, .acq_rel) + 1
         var peak = peak_handlers.load(.acquire)
         while peak < active:
@@ -100,12 +108,12 @@ struct Handlers:
                 break
             peak = observed
         thread.sleep(100)
-        discard(parallel_handlers.sub(1, .acq_rel))
+        _ = parallel_handlers.sub(1, .acq_rel)
         var buffer: u8[64]
-        let text = format(buffer, f"{peak_handlers.load(.acquire)}") catch failure: return failed(failure.code, failure.message)
+        let text = strings.format(buffer, f"{peak_handlers.load(.acquire)}") catch failure: return failed(failure.code, failure.message)
         return reply(text)
 
-    mutating func retain(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
+    func retain(view: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
         if let previous = self.expired_request:
             assert(not previous.is_valid())
             previous.release()
@@ -115,7 +123,7 @@ struct Handlers:
         self.retained_body = view.value().body() catch failure: return failed(failure.code, failure.message)
         return reply("retained")
 
-    mutating func ws(view: interop.View[websocket.Session]) -> interop.Outcome[unit]:
+    func ws(view: interop.View[websocket.Session]) -> interop.Outcome[unit]:
         if let previous = self.expired_websocket:
             assert(not previous.is_valid())
             previous.release()
@@ -140,6 +148,7 @@ struct Handlers:
         return interop.Outcome[unit].success(interop.Owned[unit](()))
 
     func ws_greeting(view: interop.View[websocket.Session]) -> interop.Outcome[unit]:
+        _ = self
         let session = view.value()
         session.accept() catch failure: return session_failure(failure.code, failure.message)
         session.send_text("hello before input") catch failure: return session_failure(failure.code, failure.message)
@@ -148,7 +157,7 @@ struct Handlers:
             message.release()
         return interop.Outcome[unit].success(interop.Owned[unit](()))
 
-    mutating func tcp(view: interop.View[socket.Session]) -> interop.Outcome[unit]:
+    func tcp(view: interop.View[socket.Session]) -> interop.Outcome[unit]:
         if let previous = self.expired_tcp:
             assert(not previous.is_valid())
             previous.release()
@@ -164,7 +173,7 @@ struct Handlers:
                 break
         return interop.Outcome[unit].success(interop.Owned[unit](()))
 
-    mutating func close():
+    func close():
         if let view = self.expired_request:
             assert(not view.is_valid())
             let rejected: const http.Request*? = view.get() catch problem:
@@ -247,9 +256,9 @@ func tcp_factory(data: str) -> interop.Outcome[http.Application]:
 
 func exercise(arguments: str[]) -> !:
     var options = http.ServerConfig(port = 0, network_workers = 8, application_workers = 2,
-        request_timeout_ms = 700, idle_timeout_ms = 700, application_timeout_ms = 300,
-        response_timeout_ms = 700, shutdown_timeout_ms = 250, memory_body_limit = 1024,
-        body_limit = 8388608, temporary_directory = arguments[2])
+                                    request_timeout_ms = 700, idle_timeout_ms = 700, application_timeout_ms = 300,
+                                    response_timeout_ms = 700, shutdown_timeout_ms = 250, memory_body_limit = 1024,
+                                    body_limit = 8388608, temporary_directory = arguments[2])
     if arguments[3] == "lifetime":
         options.memory_body_limit = 4
     let raw = arguments[3] == "raw"

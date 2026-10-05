@@ -67,6 +67,6 @@ func exercise() -> !:
     assert(refused)
 
 pub func main(arguments: str[]) -> i32!:
-    discard(arguments)
+    _ = arguments
     try exercise()
     return ownership.finish_run(0)

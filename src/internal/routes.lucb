@@ -16,7 +16,7 @@ pub struct Route:
     pub var kind: Kind
     pub var root: files.Directory
 
-    pub mutating func destroy():
+    pub func destroy():
         storage.release(self.method)
         storage.release(self.pattern)
         self.root.destroy()
@@ -25,7 +25,7 @@ pub struct Table:
     pub var entries: Route[128]
     pub var count: usize
 
-    pub mutating func add(method: str, pattern: str, kind: Kind = Kind.application) -> usize!:
+    pub func add(method: str, pattern: str, kind: Kind = Kind.application) -> usize!:
         try url.validate_pattern(pattern)
         if method.length == 0:
             error(storage.invalid, "a route needs a method")
@@ -90,7 +90,7 @@ pub struct Table:
                     longest = prefix.length
         return result
 
-    pub mutating func destroy():
+    pub func destroy():
         for index in 0..<self.count:
             self.entries[index].destroy()
         self.count = 0

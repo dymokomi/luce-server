@@ -19,22 +19,22 @@ func worker(context: void*?):
         let deadline = net.Deadline.after(100000000) catch:
             lifecycle.stop(state)
             return
-        discard(state.listener.wait(deadline = deadline, cancellation = &state.cancellation) catch failure:
+        _ = state.listener.wait(deadline = deadline, cancellation = &state.cancellation) catch failure:
             if failure.code == net.timed_out:
                 continue
             if failure.code != net.cancelled:
-                discard(state.counters.failures.add(1, .relaxed))
+                _ = state.counters.failures.add(1, .relaxed)
                 lifecycle.stop(state)
-            return)
+            return
         var accepted = state.listener.accept(true) catch failure:
             if failure.code == io.would_block:
                 continue
-            discard(state.counters.failures.add(1, .relaxed))
+            _ = state.counters.failures.add(1, .relaxed)
             thread.sleep(10)
             continue
-        let slot = alloc net.Connection[1] in memory.heap catch failure:
+        let slot = new net.Connection[1] --- in memory.heap catch failure:
             accepted.destroy()
-            discard(state.counters.failures.add(1, .relaxed))
+            _ = state.counters.failures.add(1, .relaxed)
             continue
         defer free(slot) in memory.heap
         slot[0] = accepted
@@ -42,21 +42,21 @@ func worker(context: void*?):
         defer connection.destroy()
         if state.cancellation.is_requested() or state.lifecycle.draining.load(.acquire):
             return
-        discard(state.counters.accepted.add(1, .relaxed))
-        discard(state.counters.active.add(1, .acq_rel))
-        defer discard(state.counters.active.sub(1, .acq_rel))
+        _ = state.counters.accepted.add(1, .relaxed)
+        _ = state.counters.active.add(1, .acq_rel)
+        defer _ = state.counters.active.sub(1, .acq_rel)
         if state.config.raw_socket:
             let pending = request_state.make_request(state, false) catch failure:
-                discard(state.counters.failures.add(1, .relaxed))
+                _ = state.counters.failures.add(1, .relaxed)
                 continue
             defer request_state.release_request(pending)
             pending.kind = WorkKind.tcp
             pending.session_connection = connection
-            discard(dispatch_queue.submit(pending))
+            _ = dispatch_queue.submit(pending)
         else:
             var final_started = false
             http_connection.serve(connection, state, &final_started) catch failure:
-                discard(state.counters.failures.add(1, .relaxed))
+                _ = state.counters.failures.add(1, .relaxed)
                 if not final_started:
                     wire.fail(connection, state, wire.error_status(failure.code))
 

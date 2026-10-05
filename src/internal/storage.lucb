@@ -12,7 +12,7 @@ pub let conflict: ErrorCode = ErrorCode.package(4)
 pub func copy(text: str) -> str!:
     if text.length == 0:
         return ""
-    let room = try alloc u8[text.length + 1] in memory.heap
+    let room = try new u8[text.length + 1] --- in memory.heap
     memory.copy(room, text.bytes, text.length)
     room[text.length] = 0
     return (str)room[..<text.length]
@@ -35,7 +35,7 @@ pub struct Buffer: io.Writer:
             return empty
         return self.data[..<self.used]
 
-    pub mutating func append(input: const u8[]) -> !:
+    pub func append(input: const u8[]) -> !:
         if input.length == 0: return
         if input.length > self.maximum - self.used:
             error(limit, "the buffer limit was exceeded")
@@ -46,7 +46,7 @@ pub struct Buffer: io.Writer:
                 capacity = self.maximum if capacity > self.maximum // 2 else capacity * 2
             if capacity > self.maximum:
                 capacity = self.maximum
-            let grown = try alloc u8[capacity] in memory.heap
+            let grown = try new u8[capacity] --- in memory.heap
             memory.copy(grown, self.view(), self.used)
             if self.data.length > 0:
                 free(self.data) in memory.heap
@@ -54,14 +54,14 @@ pub struct Buffer: io.Writer:
         memory.copy(self.data[self.used..], input, input.length)
         self.used = needed
 
-    pub mutating func write(input: const u8[]) -> usize!:
+    pub func write(input: const u8[]) -> usize!:
         try self.append(input)
         return input.length
 
-    pub mutating func clear():
+    pub func clear():
         self.used = 0
 
-    pub mutating func destroy():
+    pub func destroy():
         if self.data.length > 0:
             free(self.data) in memory.heap
         var empty: u8[]

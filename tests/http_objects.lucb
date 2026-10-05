@@ -6,19 +6,19 @@ from luce_json import json
 struct Handlers:
     var count: i64
 
-    mutating func ping(value: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
-        discard(value)
+    func ping(value: interop.View[http.Request]) -> interop.Outcome[interop.Reference[http.Response]]:
+        _ = value
         self.count += 1
         let result = http.Response.bytes(b"pong", "text/plain; charset=utf-8") catch failure: trap(failure.message)
         return interop.Outcome[interop.Reference[http.Response]].success(interop.Owned[interop.Reference[http.Response]](result, &result.owner.header))
 
-    mutating func close():
-        discard(0)
+    func close():
+        _ = self
 
 let handlers_type = interop.Type[Handlers]("test handlers", Handlers.close)
 
 func factory(data: str) -> interop.Outcome[http.Application]:
-    discard(data)
+    _ = data
     let native = new Handlers() catch failure: trap(failure.message)
     let handlers = interop.Reference[Handlers].adopt(native, handlers_type) catch failure: trap(failure.message)
     defer handlers.release()
@@ -40,6 +40,6 @@ func exercise() -> !:
     print("STOPPED")
 
 pub func main(arguments: str[]) -> i32!:
-    discard(arguments)
+    _ = arguments
     try exercise()
     return ownership.finish_run(0)

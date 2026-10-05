@@ -18,14 +18,14 @@ pub struct Input:
     pub func available() -> const u8[]:
         return self.bytes[self.start..<self.end]
 
-    pub mutating func consume(count: usize):
+    pub func consume(count: usize):
         assert(count <= self.end - self.start)
         self.start += count
         if self.start == self.end:
             self.start = 0
             self.end = 0
 
-    pub mutating func fill(source: io.Reader) -> bool!:
+    pub func fill(source: io.Reader) -> bool!:
         if self.start > 0:
             memory.move(self.bytes, self.available(), self.end - self.start)
             self.end -= self.start
@@ -36,7 +36,7 @@ pub struct Input:
         self.end += count
         return count != 0
 
-    pub mutating func head(source: io.Reader) -> const u8[]?!:
+    pub func head(source: io.Reader) -> const u8[]?!:
         var scan: usize = 0
         while true:
             if let boundary = net.http_head_end(self.available(), scan):

@@ -26,13 +26,13 @@ struct RouterState:
     var socket_handler: socket_api.Handler?
     var frozen: bool
 
-    mutating func add(method: str, pattern: str, handler: route.Handler) -> !:
+    func add(method: str, pattern: str, handler: route.Handler) -> !:
         if self.frozen or self.socket_handler != none:
             error(storage.conflict, "router is frozen after publishing its application")
         let index = try self.table.add(method, pattern)
         self.handlers[index] = handler.clone()
 
-    mutating func close():
+    func close():
         for index in 0..<self.handlers.length:
             if let handler = self.handlers[index]:
                 self.handlers[index] = none
@@ -56,7 +56,7 @@ struct RouterState:
         if let callback = self.socket_handler:
             callback.trace(visit, context)
 
-    mutating func dispatch(pending: Exchange*) -> !:
+    func dispatch(pending: Exchange*) -> !:
         let scope = try request.open(pending)
         defer scope.release()
         defer scope.close()
@@ -66,12 +66,12 @@ struct RouterState:
         if pending.kind == WorkKind.websocket:
             let callback = self.websocket_handlers[pending.http().route_index] else error(storage.conflict, "WebSocket route has no handler")
             try websocket_api.dispatch(pending, callback, lease)
-            self.complete_session(pending)
+            RouterState.complete_session(pending)
             return
         if pending.kind == WorkKind.tcp:
             let callback = self.socket_handler else error(storage.conflict, "TCP server has no session handler")
             try socket_api.dispatch(pending, callback, lease)
-            self.complete_session(pending)
+            RouterState.complete_session(pending)
             return
         let view = try request.view(scope, lease)
         defer view.release()
@@ -97,8 +97,8 @@ struct RouterState:
         state.dispatch.changed.broadcast()
         state.dispatch.lock.unlock()
 
-    mutating func run(ignored: unit) -> interop.Outcome[unit]:
-        discard(ignored)
+    func run(ignored: unit) -> interop.Outcome[unit]:
+        _ = ignored
         let state = application_pool.server() catch failure:
             return interop.Outcome[unit].failure(failure.code, interop.Owned[str](failure.message))
         while let pending = dispatch_queue.take(state):
@@ -106,7 +106,7 @@ struct RouterState:
             let mark = ownership.mark()
             defer ownership.drain(mark)
             self.dispatch(pending) catch failure:
-                discard(state.counters.failures.add(1, .relaxed))
+                _ = state.counters.failures.add(1, .relaxed)
                 state.dispatch.lock.lock()
                 if pending.session_connection != none:
                     pending.done = true
@@ -196,7 +196,7 @@ pub struct Router:
     func owner() -> interop.Reference[RouterState]!:
         return self.state else error(storage.closed, "router is closed")
 
-    pub mutating func close():
+    pub func close():
         if let state = self.state:
             self.state = none
             state.release()

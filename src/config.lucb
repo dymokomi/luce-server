@@ -23,7 +23,7 @@ pub struct ServerConfig:
     pub var temporary_directory: str = ""
 
     pub func validate() -> !:
-        discard(net.IpAddress.parse(self.address) else error(storage.invalid, "listen address must be numeric IPv4 or IPv6"))
+        _ = net.IpAddress.parse(self.address) else error(storage.invalid, "listen address must be numeric IPv4 or IPv6")
         if self.port < 0 or self.port > 65535 or self.network_workers < 1 or self.network_workers > 64 or self.application_workers < 1 or self.application_workers > 32 or self.backlog < 1 or self.backlog > 65535:
             error(storage.invalid, "invalid listener or worker configuration")
         if self.body_limit < 1 or self.body_limit > 1073741824 or self.memory_body_limit < 0 or self.memory_body_limit > self.body_limit or self.response_limit < 1 or self.response_limit > 67108864 or self.requests_per_connection < 1 or self.requests_per_connection > 1000000:

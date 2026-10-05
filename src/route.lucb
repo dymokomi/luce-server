@@ -23,7 +23,7 @@ pub struct Route:
         self.pattern = copied_pattern
         self.handler = handler.clone()
 
-    pub mutating func close():
+    pub func close():
         storage.release(self.method)
         storage.release(self.pattern)
         self.method = ""

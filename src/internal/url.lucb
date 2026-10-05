@@ -33,7 +33,7 @@ pub func decode(input: str, output: Buffer*, path: bool = false) -> !:
             byte = ' '
         if byte == 0 or byte < 32 or byte == 127 or (path and byte == '\\'):
             error(storage.invalid, "URL contains a forbidden byte")
-        discard(try validator.push(byte))
+        _ = try validator.push(byte)
         let one: u8[1] = [byte]
         try output.append(one)
     try validator.finish()

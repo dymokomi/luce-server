@@ -49,12 +49,12 @@ pub struct Server:
         self.watch_signals = false
         self.mounts = Table()
 
-    pub mutating func shutdown_on_signals() -> !:
+    pub func shutdown_on_signals() -> !:
         if self.state != none:
             error(storage.conflict, "signal handling must be selected before start")
         self.watch_signals = true
 
-    pub mutating func mount(prefix: str, root: interop.Reference[StaticRoot]) -> !:
+    pub func mount(prefix: str, root: interop.Reference[StaticRoot]) -> !:
         if self.state != none:
             error(storage.conflict, "static mounts must be configured before start")
         var directory = try static_root.duplicate(root)
@@ -62,7 +62,7 @@ pub struct Server:
         let slot = try self.mounts.add("GET", prefix, Kind.static_files)
         self.mounts.entries[slot].root = directory
 
-    pub mutating func start() -> !:
+    pub func start() -> !:
         if self.address.length == 0:
             error(storage.closed, "server is closed")
         if self.state != none:
@@ -108,7 +108,7 @@ pub struct Server:
         return (i64)(try state.listener.address()).port
 
     ## Start explicitly to observe the assigned port before entering run.
-    pub mutating func run() -> !:
+    pub func run() -> !:
         if self.state == none:
             try self.start()
         let state = self.state else trap("started server has no state")
@@ -123,9 +123,9 @@ pub struct Server:
     pub func statistics() -> Statistics:
         let state = self.state else return Statistics(0, 0, 0, 0, 0)
         return Statistics((i64)state.counters.accepted.load(.relaxed), (i64)state.counters.active.load(.relaxed),
-            (i64)state.counters.completed.load(.relaxed), (i64)state.counters.failures.load(.relaxed), (i64)state.counters.outstanding.load(.relaxed))
+                          (i64)state.counters.completed.load(.relaxed), (i64)state.counters.failures.load(.relaxed), (i64)state.counters.outstanding.load(.relaxed))
 
-    pub mutating func close():
+    pub func close():
         if let state = self.state:
             self.state = none
             shutdown.join(state)
@@ -140,7 +140,7 @@ pub struct Server:
         self.stop_watching()
 
     ## Acknowledge native termination only after pools and resource owners close.
-    mutating func stop_watching():
+    func stop_watching():
         var termination = self.termination else return
         self.termination = none
         termination.close()

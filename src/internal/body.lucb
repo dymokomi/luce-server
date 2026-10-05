@@ -16,7 +16,7 @@ pub struct Body:
     pub var length: usize
     pub var maximum: usize = 67108864
 
-    pub mutating func append(input: const u8[], directory: str) -> !:
+    pub func append(input: const u8[], directory: str) -> !:
         if input.length > self.maximum - self.length:
             error(storage.limit, "request body exceeds its configured limit")
         if not self.spilled and input.length > self.bytes.maximum - self.bytes.used:
@@ -33,13 +33,13 @@ pub struct Body:
 
     ## Read the whole body only under the caller's explicit memory budget.
     ## A spooled body's position is rewound; the returned view belongs to output.
-    pub mutating func load(output: Buffer*) -> const u8[]!:
+    pub func load(output: Buffer*) -> const u8[]!:
         if self.length > output.maximum:
             error(storage.limit, "body is too large for an in-memory read")
         if not self.spilled:
             return self.bytes.view()
         output.clear()
-        discard(try self.temporary.seek(0))
+        _ = try self.temporary.seek(0)
         var block: u8[16384]
         var remaining = self.length
         while remaining > 0:
@@ -53,7 +53,7 @@ pub struct Body:
 
     ## Publish through a temporary sibling. Until the full copy and rename
     ## succeed, the destination is unchanged. Paths come from application policy.
-    pub mutating func save(destination: str, replace: bool) -> !:
+    pub func save(destination: str, replace: bool) -> !:
         let owned = try storage.copy(destination)
         defer storage.release(owned)
         let directory = try storage.copy(paths.directory(destination))
@@ -62,7 +62,7 @@ pub struct Body:
             var target = try files.TemporaryFile.create((c.str)directory)
             defer target.destroy()
             if self.spilled:
-                discard(try self.temporary.seek(0))
+                _ = try self.temporary.seek(0)
                 var block: u8[16384]
                 var remaining = self.length
                 while remaining > 0:
@@ -76,6 +76,6 @@ pub struct Body:
                 try io.write_all(&target, self.bytes.view())
             try target.publish((c.str)owned, replace)
 
-    pub mutating func destroy():
+    pub func destroy():
         self.bytes.destroy()
         self.temporary.destroy()

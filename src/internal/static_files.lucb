@@ -128,7 +128,7 @@ pub func serve(request: Exchange*, mount: Route*) -> !:
         error(storage.invalid, "the static file has an invalid size")
     let length = (u64)info.size
     var tag_buffer: u8[160]
-    let tag = try format(tag_buffer, f"W/\"{info.device}-{info.inode}-{info.size}-{info.modified.seconds}-{info.modified.nanoseconds}-{info.changed.seconds}-{info.changed.nanoseconds}\"")
+    let tag = try strings.format(tag_buffer, f"W/\"{info.device}-{info.inode}-{info.size}-{info.modified.seconds}-{info.modified.nanoseconds}-{info.changed.seconds}-{info.changed.nanoseconds}\"")
     try responses.content(request, 200, media_type(filename), "".bytes)
     try responses.field(request, "ETag", tag)
     try responses.field(request, "Accept-Ranges", "bytes")
@@ -155,13 +155,13 @@ pub func serve(request: Exchange*, mount: Route*) -> !:
                     offset = selected.0
                     count = selected.1
                     request.http().reply.status = 206
-                    try responses.field(request, "Content-Range", try format(range_buffer, f"bytes {offset}-{offset + count - 1}/{length}"))
+                    try responses.field(request, "Content-Range", try strings.format(range_buffer, f"bytes {offset}-{offset + count - 1}/{length}"))
                 else:
                     request.http().reply.status = 416
-                    try responses.field(request, "Content-Range", try format(range_buffer, f"bytes */{length}"))
+                    try responses.field(request, "Content-Range", try strings.format(range_buffer, f"bytes */{length}"))
                     opened.destroy()
                     return
-    discard(try opened.seek((i64)offset))
+    _ = try opened.seek((i64)offset)
     request.http().reply.file = opened
     request.http().reply.file_length = count
     request.http().reply.is_file = true

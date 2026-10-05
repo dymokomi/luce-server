@@ -37,8 +37,8 @@ pub func send(destination: io.Writer, request: Exchange*, keep_alive: bool) -> !
     let no_body = request.http().reply.status == 204 or request.http().reply.status == 304
     var head_buffer: u8[16384]
     let encoded = try net.http_encode_head(head_buffer, net.HttpHead(method = request.http().head.method, version = request.http().head.version,
-        status = request.http().reply.status, fields = fields[..<count], body_kind = net.HttpBodyKind.empty if no_body else net.HttpBodyKind.fixed,
-        body_length = length, keep_alive = keep_alive))
+                                                                     status = request.http().reply.status, fields = fields[..<count], body_kind = net.HttpBodyKind.empty if no_body else net.HttpBodyKind.fixed,
+                                                                     body_length = length, keep_alive = keep_alive))
     try io.write_all(destination, encoded)
     if request.http().head.method == "HEAD" or no_body:
         return
@@ -51,10 +51,10 @@ pub func send(destination: io.Writer, request: Exchange*, keep_alive: bool) -> !
             let read = try request.http().reply.file.read(block[..<amount])
             if read == 0:
                 error(io.unexpected_eof, "response file was truncated during transfer")
-            discard(try writer.write(block[..<read]))
+            _ = try writer.write(block[..<read])
             remaining -= (u64)read
     else:
-        discard(try writer.write(request.http().reply.bytes.view()))
+        _ = try writer.write(request.http().reply.bytes.view())
     try writer.finish()
 
 pub func field(request: Exchange*, name: str, value: str) -> !:

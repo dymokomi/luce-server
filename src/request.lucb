@@ -16,7 +16,7 @@ pub struct Scope:
     pub var pending: Exchange*
     var body: interop.Reference[Body]?
 
-    pub mutating func close():
+    pub func close():
         if let retained_body = self.body:
             retained_body.release()
         self.body = none
@@ -41,7 +41,7 @@ pub struct Request:
         let value = self.scope.pending.http().head.field(name) else return none
         var decoder: utf8.Decoder
         for byte in value.bytes:
-            discard(try decoder.push(byte))
+            _ = try decoder.push(byte)
         try decoder.finish()
         return value
 

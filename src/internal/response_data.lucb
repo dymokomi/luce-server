@@ -21,7 +21,7 @@ pub struct Data:
     pub var stop_after: bool
     pub var close_after: bool
 
-    pub mutating func close():
+    pub func close():
         self.bytes.destroy()
         self.content_type.destroy()
         self.headers.destroy()
