@@ -1,0 +1,25 @@
+# What the gate runs on each platform (luce-base tools/gate.py, docs/CI.md): bash commands
+# in this checkout, in order, beside its dependencies at main, with LUCE_BASE and LUCE
+# naming the toolchain the gate built.
+
+[macos]
+steps = [
+    # test all native optimization levels
+    "./test.sh --base ../luce-base/build/luce-base",
+]
+full = [
+    # check native heap cleanup
+    "python3 tests/heap.py build/server-0",
+]
+
+[linux]
+steps = [
+    # test all native optimization levels
+    "./test.sh --base ../luce-base/build/luce-base",
+]
+
+[windows]
+steps = [
+    # run Windows contracts
+    "python tests/run.py",
+]
