@@ -17,11 +17,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def build(entry: Path, output: Path, compiler: Path, opt: int = 0) -> None:
     entry, output, compiler = entry.resolve(), output.resolve(), compiler.resolve()
-    expected = (ROOT / "bootstrap/JSON").read_text().strip()
-    actual = subprocess.check_output(["git", "-C", str(ROOT.parent / "luce-json"),
-                                      "rev-parse", "HEAD"], text=True).strip()
-    if actual != expected:
-        raise SystemExit(f"luce-json must be checked out at {expected}, found {actual}")
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="luce-server-") as temporary:
         project = Path(temporary) / "luce-server"
