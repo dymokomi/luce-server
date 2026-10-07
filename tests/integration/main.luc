@@ -1,0 +1,33 @@
+# The server against independent clients: integration.py drives drivers/server.lucb over
+# HTTP, WebSockets and raw sockets with Python's own libraries, object_smoke.py sends
+# concurrent requests to the object-API consumer drivers/http_objects.lucb, and on POSIX
+# process_ownership.py checks that the fixture reaps helpers whose parent already exited.
+# `luc test` runs this with LUCE_BASE naming the compiler that builds the drivers.
+from luce_std import files, paths, process
+import platform
+
+let failed = ErrorCode.package(1)
+
+pub func main(arguments: list[str]) -> int!:
+    let here = process.current_directory()
+    let base = process.variable("LUCE_BASE") else "luce-base"
+    let binaries = paths.join(paths.directory(paths.directory(here)), "build/tests/integration/drivers")
+    files.ensure_directory(binaries)
+    for name in ["server", "http_objects"]:
+        let built = process.run(base, ["build", paths.join(here, f"drivers/{name}.lucb"), "--native", "-o", paths.join(binaries, name)], here)
+        if built.exit_code != 0:
+            error(failed, f"build {name}: {built.output}{built.error_output}")
+    var checks = [["integration.py", paths.join(binaries, "server")], ["object_smoke.py", paths.join(binaries, "http_objects")]]
+    if not platform.windows:
+        checks.append(["process_ownership.py"])
+    var failures = 0
+    for words in checks:
+        let ran = process.run("python3", words, here)
+        if ran.output != "":
+            print(ran.output.trim_end())
+        if ran.exit_code != 0:
+            print(f"FAIL {words[0]}: exit status {ran.exit_code}\n{ran.error_output}")
+            failures += 1
+        else:
+            print(f"PASS {words[0]}")
+    return 1 if failures > 0 else 0

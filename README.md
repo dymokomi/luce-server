@@ -58,17 +58,18 @@ A complete Base consumer is
 in [tests/server.lucb](tests/server.lucb); it uses explicit Base reference ownership.
 
 ```sh
-./test.sh
+luc test
 ```
 
-The gate runs native optimization levels 0–3 with independent Python HTTP,
-WebSocket and TCP clients. It covers routing, HEAD/OPTIONS, keep-alive, pipelining,
+`tests/unit` and `tests/lifecycle` check routing, URLs and startup on their own;
+`tests/integration` builds the drivers in `tests/integration/drivers/` and runs independent
+Python HTTP, WebSocket and TCP clients against them. It covers routing, HEAD/OPTIONS, keep-alive, pipelining,
 chunking, `100 Continue`, static validators/ranges, uploads, slow peers, application
 errors/deadlines, concurrent handlers, expired views, retained spooled bodies,
 startup failures and joined shutdown. On macOS:
 
 ```sh
-python3 tests/heap.py build/server-0
+(cd tests/integration && python3 heap.py ../../build/tests/integration/drivers/server)  # after luc test
 ```
 
 See [API](docs/API.md), [design](docs/DESIGN.md) and
@@ -77,5 +78,5 @@ database integration remain separate work. Licensed under MIT or Apache-2.0.
 
 ## Windows x64
 
-Build sibling `luce-base` checkouts with `python tools/build_windows.py` in each compiler repository. Run `python tests/run.py` in this repository; the runner selects the sibling Windows executables.
+Build sibling `luce-base` checkouts with `python tools/build_windows.py` in each compiler repository. Run `luc test` in this repository.
 Windows shutdown uses console control events. The integration runner gives its server a private console and verifies graceful Ctrl+Break shutdown. Temporary storage defaults to the host temporary directory.
